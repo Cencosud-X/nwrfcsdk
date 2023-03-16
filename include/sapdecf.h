@@ -1,4 +1,4 @@
-/* @(#) $Id: //bas/753_REL/src/base/api/sapdecf.h#2 $ SAP*/
+/* @(#) $Id: //bas/753_COR/src/base/api/sapdecf.h#3 $ SAP*/
 /*-----------------------------------------------------------------------------
  *
  * (c) Copyright SAP AG, Walldorf
@@ -1460,6 +1460,8 @@ typedef void * (*Decfl34AllocateCallBack)(SAP_ULLONG);
  * performs a division to a decfloat34. Note that divident and divisor are not transformed
  * to a decfloat34 _before_ the division (and thus loosing precision or generating exceptions
  * because of too large numbers) but _during_ the divison.
+ *
+ * NOTE: This function is not available in the RFC SDK.
  *
  * @param divident   Divident (as ASCII encoded string)
  * @param divisor    Divisor (as ASCII encoded string)

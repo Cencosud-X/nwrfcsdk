@@ -1,2 +1,2 @@
 # nwrfcsdk
-NetWeaver RFC SDK for node-rfc
+https://github.com/SAP/node-rfc/blob/main/doc/installation.md

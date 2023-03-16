@@ -4,9 +4,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #ifndef SAPTYPE_H
-#include "sapucx.h"
+#include "sapucrfc.h"
 #endif /* SAPTYPE_H */
-#include "sapuc.h"
 
 #ifndef DECL_EXP
 #   if defined(SAPonLIN) && defined(GCC_HIDDEN_VISIBILITY)
@@ -163,6 +162,10 @@ typedef enum _RFC_RC
     RFC_ABAP_CLASS_EXCEPTION,   ///< The called function module raised a class based exception 
 	RFC_UNKNOWN_ERROR,			///< "Something" went wrong, but I don't know what...
 	RFC_AUTHORIZATION_FAILURE,	///< Authorization check error
+    RFC_AUTHENTICATION_FAILURE,	///< The authentication handler (RFC_ON_AUTHENTICATION_CHECK) failed to authenticate the user trying to log on
+	RFC_CRYPTOLIB_FAILURE,	    ///< Error when dealing with functions provided by the cryptolibrary
+	RFC_IO_FAILURE,				///< Error when dealing with io functions, streams etc
+	RFC_LOCKING_FAILURE,	    ///< Requesting or freeing critical sections or mutex failed
 	_RFC_RC_max_value			///< Don't use
 }RFC_RC;
 
@@ -181,8 +184,14 @@ typedef enum _RFC_ERROR_GROUP
 	COMMUNICATION_FAILURE,			///< Problems with the network connection (or backend broke down and killed the connection)
 	EXTERNAL_RUNTIME_FAILURE,		///< Problems in the RFC runtime of the external program (i.e "this" library)
 	EXTERNAL_APPLICATION_FAILURE,	///< Problems in the external program (e.g in the external server implementation)
-	EXTERNAL_AUTHORIZATION_FAILURE	///< Problems raised in the authorization check handler provided by the external server implementation
+	EXTERNAL_AUTHORIZATION_FAILURE,	///< Problems raised in the authorization check handler provided by the external server implementation
+    EXTERNAL_AUTHENTICATION_FAILURE,///< Problems raised by the authentication handler (RFC_ON_AUTHENTICATION_CHECK)
+	CRYPTOLIB_FAILURE,              ///< Problems when dealing with functions provided by the cryptolibrary
+	LOCKING_FAILURE	                ///< Requesting or freeing critical sections or mutex failed
 }RFC_ERROR_GROUP;
+
+
+
 
 /** \struct _RFC_ERROR_INFO
  * \ingroup api
@@ -283,7 +292,12 @@ typedef struct _RFC_UNIT_ATTRIBUTES{
 	short satTrace;					///< If != 0, the backend will write statistic records, while executing this unit.
 	short unitHistory;				///< If != 0, the backend will keep a "history" for this unit.
 	short lock;						///< Used only for type Q: If != 0, the unit will be written to the queue, but not processed. The unit can then be started manually in the ABAP debugger.
-	short noCommitCheck;			///< Per default the backend will check during execution of a unit, whether one of the unit's function modules triggers an explicit or implicit COMMIT WORK. In this case the unit is aborted with an error, because the transactional integrity of this unit cannot be guaranteed. By setting "noCommitCheck" to true (!=0), this behavior can be suppressed, meaning the unit will be executed anyway, even if one of it's function modules "misbehaves" and triggers a COMMIT WORK.
+	short noCommitCheck;			///< Per default the backend will check during execution of a unit, whether one
+                                    ///< of the unit's function modules triggers an explicit or implicit COMMIT WORK.
+                                    ///< In this case the unit is aborted with an error, because the transactional
+                                    ///< integrity of this unit cannot be guaranteed. By setting "noCommitCheck" to
+                                    ///< true (!=0), this behavior can be suppressed, meaning the unit will be executed
+                                    ///< anyway, even if one of its function modules "misbehaves" and triggers a COMMIT WORK.
 	SAP_UC user[12+1];				///< Sender User (optional). Default is current operating system User.
 	SAP_UC client[3+1];				///< Sender Client ("Mandant") (optional). Default is "000".
 	SAP_UC tCode[20+1];				///< Sender Transaction Code (optional). Default is "".
@@ -350,6 +364,33 @@ typedef struct _RFC_SERVER_CONTEXT{
 	SAP_UC sessionID[33];					///< Contains a unique zero-terminated session ID, identifying the ABAP or external user session. Can be used in stateful servers to store session context in a hashmap.
 }RFC_SERVER_CONTEXT;
 
+/** \enum _RFC_AUTHENTICATION_TYPE
+* \ingroup autoserver
+*
+* Type of authentication method used by the backend authentication handler (RFC_ON_AUTHENTICATION_CHECK).
+*/
+typedef enum _RFC_AUTHENTICATION_TYPE{
+    RFC_AUTH_NONE,                          ///< No authentication data was provided
+    RFC_AUTH_BASIC,                         ///< Authentication with user and password
+    RFC_AUTH_X509,                          ///< Authentication with x509 certificate
+    RFC_AUTH_SSO                            ///< Authentication with assertion ticket
+}RFC_AUTHENTICATION_TYPE;
+
+/** \struct _RFC_CERTIFICATE_DATA
+* \ingroup autoserver
+*
+* Compact structure containing relevant information about the x509 certificate provided by the RFC client. Can be accessed by the
+* authentication handler (RFC_ON_AUTHENTICATION_CHECK) and used for validating the user trying to log on.
+*/
+
+typedef struct _RFC_CERTIFICATE_DATA{
+    const SAP_UC* subject;                   ///< Distinguished name of the user of the certificate
+    const SAP_UC* issuer;                    ///< Distinguished name of the certificate authority (CA) that issued the certificate
+    SAP_ULLONG validTo;                      ///< UTC Expiration date on which the certificate is no longer considered valid
+    SAP_ULLONG validFrom;                    ///< UTC Starting date since the certificate is valid
+    const SAP_UC* signature;                 ///< Fingerprint of the public key
+    struct _RFC_CERTIFICATE_DATA* next;      ///< Pointer to the next certificate in the chain if any
+}RFC_CERTIFICATE_DATA;
 
 /** \struct _RFC_TYPE_DESC_HANDLE
  * \ingroup repository
@@ -416,6 +457,15 @@ typedef DATA_CONTAINER_HANDLE RFC_ABAP_OBJECT_HANDLE;
 */
 typedef struct _RFC_THROUGHPUT_HANDLE {void* handle;} *RFC_THROUGHPUT_HANDLE;
 
+/** \struct _RFC_AUTHENTICATION_HANDLE
+* \ingroup autoserver
+*
+* Handle to an authentication object which gives access to relevant authentication data received from the client.
+* This data can be used to authenticate users in the authentication handler (RFC_ON_AUTHENTICATION_CHECK).
+* Passed into the authentication handler (RFC_ON_AUTHENTICATION_CHECK) by the NW RFC library
+*/
+typedef struct _RFC_AUTHENTICATION_HANDLE {void* handle;} *RFC_AUTHENTICATION_HANDLE;
+
 /** \struct _RFC_CONNECTION_HANDLE
  * \ingroup connection
  *
@@ -446,7 +496,10 @@ typedef enum _RFC_PROTOCOL_TYPE{
 	RFC_REGISTERED_SERVER,	///< Registered RFC Server
 	RFC_MULTI_COUNT_REGISTERED_SERVER,///< Multi-count registered RFC Server
 	RFC_TCP_SOCKET_CLIENT,	///< TCP Client
-	RFC_TCP_SOCKET_SERVER	///< TCP Server
+	RFC_TCP_SOCKET_SERVER,	///< TCP Server
+    RFC_WEBSOCKET_CLIENT,	///< Websocket RFC Client
+    RFC_WEBSOCKET_SERVER,	///< Websocket RFC Server
+    RFC_PROXY_WEBSOCKET_CLIENT	///< Websocket RFC Client
 }RFC_PROTOCOL_TYPE;
 
 /** \enum _RFC_SERVER_STATE
@@ -688,7 +741,8 @@ extern "C"
 														SAP_UC *password,  unsigned passwordLength,
 														SAP_UC *newPassword, unsigned newPasswordLength,
 														RFC_ERROR_INFO* cause);
-	typedef RFC_RC (SAP_API* RFC_ON_AUTHORIZATION_CHECK)(RFC_CONNECTION_HANDLE rfcHandle, RFC_SECURITY_ATTRIBUTES *secAttributes, RFC_ERROR_INFO* errorInfo); 
+	typedef RFC_RC (SAP_API* RFC_ON_AUTHORIZATION_CHECK)(RFC_CONNECTION_HANDLE rfcHandle, RFC_SECURITY_ATTRIBUTES *secAttributes, RFC_ERROR_INFO* errorInfo);
+    typedef RFC_RC (SAP_API* RFC_ON_AUTHENTICATION_CHECK)(RFC_ATTRIBUTES rfcAttributes, RFC_AUTHENTICATION_HANDLE authenticationHandle, RFC_ERROR_INFO* errorInfo); 
 
     /* ***********************************************************************/
     /*                                                                       */
@@ -706,6 +760,16 @@ extern "C"
 	 * \return RFC_RC
 	 */
 	DECL_EXP RFC_RC SAP_API RfcInit(void);
+
+	/**
+	 * \brief  Freeing of internal variables
+	 * \ingroup general
+	 *
+	 * Obsolete.
+	 * The RFC library does this automatically on DLL unload.
+	 * \return RFC_RC
+	 */
+	DECL_EXP RFC_RC SAP_API RfcCleanup(void);
 
 	/**
 	 * \brief  Get information about currently loaded sapnwrfc library.
@@ -746,15 +810,18 @@ extern "C"
 	DECL_EXP RFC_RC SAP_API RfcSetIniPath(const SAP_UC* pathName, RFC_ERROR_INFO* errorInfo);
 
 	/**
-	 * \brief  Loads the contents of the sapnwrfc.ini file into memory.
+	 * \brief  Reloads the contents of the sapnwrfc.ini file into memory.
 	 * \ingroup general
 	 *
 	 * Searches the directory given by RfcSetIniPath() (or the current working directory)
-	 * for the file sapnwrfc.ini and loads its contents into memory.
-	 *
-	 * \out *errorInfo Detail information in case anything goes wrong. Note: if a file
-	 * with the name sapnwrfc.ini does not exist in the given directory, this is not
+	 * for the file sapnwrfc.ini and loads its contents into memory. Reloading the sapnwrfc.ini
+	 * file is only necessary after the file has been manually edited
+	 * If you want to use a sapnwrfc.ini file in a different location, consider using %RfcSetIniPath().
+	 * 
+	 * Note: If a file with the name sapnwrfc.ini does not exist in the given directory, this is not
 	 * considered an error! Default settings are used in this case.
+	 *
+	 * \out *errorInfo Detail information in case anything goes wrong. 
 	 * \return RFC_RC
 	 */
 	DECL_EXP RFC_RC SAP_API RfcReloadIniFile(RFC_ERROR_INFO* errorInfo);
@@ -771,7 +838,7 @@ extern "C"
 	 * via a DEST=... entry in sapnwrfc.ini. The new trace level will be used for new connections
 	 * to that destination opened after the %RfcSetTraceLevel() call. Already existing connections to
 	 * that destination will not be effected.
-     * \in traceLevel The new trace level. Must be between 0 and 3. The meaning of those four values
+     * \in traceLevel The new trace level. Must be between 0 and 4. The meaning of those four values
 	 * is as follows:
 	 * - 0: Off. Only severe errors are logged to the dev_rfc.trc file.
 	 * - 1: Brief. All API calls (except for the setter and getter functions) and important attributes
@@ -782,25 +849,26 @@ extern "C"
 	 * - 2: Verbose. In addition to 1, the values of the "scalar" RFC parameters as well as the contents
 	 *      of the network containers are traced. Scalar parameters are primitive types (CHAR, INT, FLOAT, etc)
 	 *      and flat structures.
-	 * - 3: Full. In addition to 2 the contents of nested structures and tables as well as all API calls
-	 *      of setter and getter functions are traced.
+	 * - 3: Detailed. In addition to 2 the contents of nested structures and tables and hexdumps
+	 * - 4: Full. In addition to 3 all API calls of setter and getter functions and table operations
+	 *      are traced.
 	 * \out *errorInfo Detail information in case the specified connection or destination does not exist.
 	 * \return RFC_OK, RFC_INVALID_HANDLE or RFC_INVALID_PARAMETER
 	 *
 	 * \note In general RFC trace can be activated/deactivated in 6 different ways:
-	 * - By setting the parameter RFC_TRACE=[0|1|2|3] in the DEFAULT section of the sapnwrfc.ini file.
+	 * - By setting the parameter RFC_TRACE=[0|1|2|3|4] in the DEFAULT section of the sapnwrfc.ini file.
 	 *   This value applies to all destinations, for which no explicit trace level has been set.
 	 *   ("Global" trace level.)
-	 * - By setting the parameter TRACE=[0|1|2|3] in a specific destination section of sapnwrfc.ini.
+	 * - By setting the parameter TRACE=[0|1|2|3|4] in a specific destination section of sapnwrfc.ini.
 	 *   it applies to that destination only and overrules the "global" trace level from the DEFAULT section.
-	 * - By setting the environment variable RFC_TRACE=[0|1|2|3]. This overrules the setting from the
+	 * - By setting the environment variable RFC_TRACE=[0|1|2|3|4]. This overrules the setting from the
 	 *   DEFAULT section of sapnwrfc.ini.
 	 * - Via %RfcSetTraceLevel(). If connection and destination are NULL, this function sets the global
 	 *   trace level and overrules the value from the DEFAULT section of sapnwrfc.ini as well as the environment
 	 *   variable RFC_TRACE. If connection is non-NULL, it sets the trace level for the current connection only,
 	 *   and if destination is non-NULL, it sets the trace level for that destination, overruling the value from
 	 *   this destination's section in the sapnwrfc.ini file.
-	 * - By passing a {name=TRACE, value=[0|1|2|3]} pair in the RFC_CONNECTION_PARAMETER array used in
+	 * - By passing a {name=TRACE, value=[0|1|2|3|4]} pair in the RFC_CONNECTION_PARAMETER array used in
 	 *   RfcOpenConnection(), RfcRegisterServer() or RfcStartServer(). If that RFC_CONNECTION_PARAMETER array
 	 *   also contains a {name=DEST, value=...} pair, the trace parameter from the array overrules the value
 	 *   from this destination's sapnwrfc.ini section.
@@ -921,6 +989,87 @@ extern "C"
     */
     DECL_EXP RFC_RC SAP_API RfcSetSocketTraceLevel(unsigned traceLevel, RFC_ERROR_INFO* errorInfo);
 
+
+    /**
+    * \brief  Sets the absolute path to the sapcrypto library to enable TLS encryption via Websocket Rfc.
+    * \ingroup general
+    *
+    * The parameter pathToLibrary needs also to contain the name of the library.
+    * This function has the same effect as the sapnwrfc.ini parameter TLS_SAPCRYPTOLIB.
+    * This API cannot reset a new path to the library during runtime. Once set, the path is definitive. 
+    *
+    * \in *pathToLibrary Absolute path to library (.so or .dll).
+    * \out *errorInfo Detail information in case of an error.
+    * \return RFC_RC
+    */
+    DECL_EXP RFC_RC SAP_API RfcLoadCryptoLibrary(const SAP_UC* const pathToLibrary, RFC_ERROR_INFO* errorInfo);
+	/**
+	* \brief  Sets the global idle time interval of a Websocket server connection in seconds after which
+	* a keep alive Websocket ping packet is sent.
+	* \ingroup general
+	*
+	* This function has the same effect as the sapnwrfc.ini parameter RFC_WEBSOCKET_PING_INTERVAL.
+	* The default value is 300; valid values are 0 [off] and a range from 10 [ten seconds] to 86400 [one day].
+	*
+	* \in pingInterval Interval in seconds.
+	* \out *errorInfo Detail information in case of an error.
+	* \return RFC_RC
+	*/
+	DECL_EXP RFC_RC SAP_API RfcSetWebsocketPingInterval(unsigned pingInterval, RFC_ERROR_INFO* errorInfo);
+
+	/**
+	* \brief  Sets the global timeout for a WebSocket keep alive ping reply packet in seconds.
+	* \ingroup general
+	*
+	* This function has the same effect as the sapnwrfc.ini parameter RFC_WEBSOCKET_PONG_TIMEOUT.
+	* If no such so-called pong packet is received from the communication partner as a reply to a previously sent
+	* WebSocket keep alive ping packet within this timeout period, the connection is considered as broken and will be closed.
+	* The default value is 60; valid values are 0 [off] and a range from 10 [ten seconds] to 3600 [one hour].
+	* The timeout value should be set lower than the ping interval of the server, so only one ping is active at a time.
+	*
+	* \in pongTimeout Timeout in seconds.
+	* \out *errorInfo Detail information in case of an error.
+	* \return RFC_RC
+	*/
+	DECL_EXP RFC_RC SAP_API RfcSetWebsocketPongTimeout(unsigned pongTimeout, RFC_ERROR_INFO* errorInfo);
+
+    /**
+    * \brief  Sets the maximum size of the trace file, after which the current file is closed and "rolled over" to a new file.
+    * \ingroup general
+    *
+    * This function has the same effect as the sapnwrfc.ini parameter RFC_TRACE_MAX_FILE_SIZE. By default
+    * two files of a maximum of 512 MB are stored.
+    * However this function cannot set the size below a minimum value of 20 MB or the value set by RFC_TRACE_MAX_FILE_SIZE 
+    * from the sapnwrfc.ini.
+    * As unit of measure you can use "M" for Megabytes or "G" for Gigabytes, for example 1024 and M.
+    *
+    * \in size Size in specified unit
+    * \in unit Unit of measurement
+    * \out *errorInfo Detail information in case of an error.
+    * \return RFC_RC
+    */
+    DECL_EXP RFC_RC SAP_API RfcSetMaximumTraceFileSize(unsigned size, SAP_UC unit, RFC_ERROR_INFO* errorInfo);
+
+    /**
+    * \brief  Sets the maximum size of stored old trace files, after which the current file is closed and "rolled over" to a new file.
+    * \ingroup general
+    *
+    * This function has the same effect as the sapnwrfc.ini parameter RFC_TRACE_MAX_STORED_FILES.
+    * An additional "roll" to a new file after the maximum is reached, triggers a deletion of the oldest file.
+    * The old stored files are marked with the opening timestamp in the file name, when a "roll over" is done.
+    * By default two files are stored. The current trace file is not yet marked with the time stamp.
+    * However this function cannot set the size to zero, (it will result in an error,) or to a value lower than the one set 
+    * by RFC_TRACE_MAX_STORED_FILES from the sapnwrfc.ini.
+    * By setting this value to -1, the limit is disabled and and an infinite amount of concurrent files can
+    * be kept, i.e. no files will be deleted by the NW RFC library.
+    * \warning Attention: Lowering the value might delete some old files, if there are currently more stored 
+    * files than permitted by the new (lower) value.
+    *
+    * \in numberOfFiles Maximum size of stored old trace
+    * \out *errorInfo Detail information in case of an error.
+    * \return RFC_RC
+    */
+    DECL_EXP RFC_RC SAP_API RfcSetMaximumStoredTraceFiles(int numberOfFiles, RFC_ERROR_INFO* errorInfo);
 
 	/**
      * \brief  Converts data in UTF-8 format to SAP_UC strings.
@@ -1333,15 +1482,62 @@ extern "C"
     *
     * \in rfcHandle RFC connection
     * \out *sapRouter Pre-allocated buffer
-    * \inout *length Needs to be filled with the buffer length of SAPRouter. The return value will be the string
-    * length of the returned SAPRouter (if buffer was large enough) or the required buffer size (if RFC_BUFFER_TOO_SMALL).
+    * \inout *length Needs to be filled with the buffer length of sapRouter. The return value will be the string
+    * length of the returned sapRouter (if buffer was large enough) or the required buffer size (if RFC_BUFFER_TOO_SMALL).
     * In the first case, the length value will be the string length without the terminating zero, in the second case it will be the
     * required buffer size including the terminating zero.
     * \out *errorInfo More error details in case something goes wrong.
-    * \return RFC_RC
+    * \return RFC_BUFFER_TOO_SMALL, if the provided sapRouter buffer was too small. RFC_OK otherwise.
     */
+	DECL_EXP RFC_RC SAP_API RfcGetSapRouter(RFC_CONNECTION_HANDLE rfcHandle, SAP_UC *sapRouter, unsigned *length, RFC_ERROR_INFO* errorInfo);
 
-    DECL_EXP RFC_RC SAP_API RfcGetSapRouter(RFC_CONNECTION_HANDLE rfcHandle, SAP_UC *sapRouter, unsigned *length, RFC_ERROR_INFO* errorInfo);
+	/** \brief  Gets the external IP address of the communication partner.
+	* \ingroup connection
+	*
+	* In scenarios where NAT (Network Address Translation) is performed between the LAN segment, where the external RFC program is
+	* running, and the LAN segment, where the backend system is running, the RFC_ATTRIBUTES (members "partnerHost", "partnerIP" or "partnerIPv6")
+	* will always contain the hostname/address returned by the backend system, which is the address as it is known inside the internal LAN segment.
+	* However, this address is usually unusable/invalid inside the external LAN segment. External programs that need a valid "external" IP address
+	* of the current communication partner, can use this API to obtain it.
+	* If no NAT is used in the current scenario, the value returned by this API will be equal to partnerIP/partnerIPv6 from the RFC_ATTRIBUTES.
+	*
+	*
+	* \in rfcHandle RFC connection
+	* \out *partnerExternalIP Pre-allocated buffer
+	* \inout *length Needs to be filled with the buffer length of partnerExternalIP. The return value will be the string
+	* length of the returned external IP (if buffer was large enough) or the required buffer size (if RFC_BUFFER_TOO_SMALL).
+	* In the first case, the length value will be the string length without the terminating zero, in the second case it will be the
+	* required buffer size including the terminating zero.
+	* \out *errorInfo More error details in case something goes wrong.
+	* \return RFC_BUFFER_TOO_SMALL, if the provided partnerExternalIP buffer was too small.
+	*         RFC_INVALID_HANDLE, if the given rfcHandle is not connected.
+	*         RFC_INVALID_PARAMETER, if one of the input values is invalid.
+	*         RFC_OK otherwise.
+	*/
+	DECL_EXP RFC_RC SAP_API RfcGetPartnerExternalIP(RFC_CONNECTION_HANDLE rfcHandle, SAP_UC *partnerExternalIP, unsigned *length, RFC_ERROR_INFO* errorInfo);
+
+	/** \brief  Gets the IP address of the local network interface used by this connection.
+	* \ingroup connection
+	*
+	* On servers with multiple network interfaces, it may be useful to know, via which interface the current connection has been established.
+	*
+	*
+	* \in rfcHandle RFC connection
+	* \out *localAddress Pre-allocated buffer. If you use a buffer of length at least 46, it will always be sufficient,
+	* even in case of IPv6 addresses.
+	* \inout *length Needs to be filled with the buffer length of partnerExternalIP. The return value will be the string
+	* length of the returned external IP (if buffer was large enough) or the required buffer size (if RFC_BUFFER_TOO_SMALL).
+	* In the first case, the length value will be the string length without the terminating zero, in the second case it will be the
+	* required buffer size including the terminating zero.
+	* \out *localPort The local port used for the network connection.
+	* \out *errorInfo More error details in case something goes wrong.
+	* \return RFC_BUFFER_TOO_SMALL, if the provided partnerExternalIP buffer was too small.
+	*         RFC_INVALID_HANDLE, if the given rfcHandle is not connected.
+	*         RFC_INVALID_PARAMETER, if one of the input values is invalid.
+	*         RFC_EXTERNAL_FAILURE, if a network level error occurs.
+	*         RFC_OK otherwise.
+	*/
+	DECL_EXP RFC_RC SAP_API RfcGetLocalAddress(RFC_CONNECTION_HANDLE rfcHandle, SAP_UC* localAddress, unsigned* length, unsigned* localPort, RFC_ERROR_INFO* errorInfo);
 
 	/** \brief  Gets the partner's SSO2 ticket, if any.
 	 * \ingroup connection
@@ -1508,6 +1704,8 @@ extern "C"
 	DECL_EXP RFC_RC SAP_API RfcInvoke(RFC_CONNECTION_HANDLE rfcHandle, RFC_FUNCTION_HANDLE funcHandle, RFC_ERROR_INFO* errorInfo);
 
 
+
+
     /* ***********************************************************************/
     /*                                                                       */
     /*  Automated Server API                                                 */
@@ -1515,11 +1713,11 @@ extern "C"
     /* ***********************************************************************/
 
 
-	/** \brief  This function can be used to start "automatic" servers as they are known from JCo and NCo.
+	/** \brief  This function can be used to start "automatic" servers.
 	* \ingroup autoserver
 	*
 	* In contrast to RfcRegisterServer(), which registers one single server connection at a SAP gateway, %RfcCreateServer() can be used
-	* to create a "JCo-like" server object that manages multiple server connections in parallel, that takes care of automatically
+	* to create a server object that manages multiple server connections in parallel, that takes care of automatically
 	* re-registering a connection in case it gets broken by network problems, etc. and that takes care of the dispatch-loop
 	* internally, so that application programmers no longer need to implement that error-prone task themselves. This means,
 	* you no longer need to use RfcListenAndDispatch() and no longer need to worry about creating multiple threads with such a
@@ -1733,6 +1931,99 @@ extern "C"
 	DECL_EXP RFC_RC SAP_API RfcSetServerStateful(RFC_CONNECTION_HANDLE connectionHandle, unsigned isStateful, RFC_ERROR_INFO* errorInfo);
 
 
+    /**
+    * \brief  Installs an optional function for performing authentication checks on incoming login attempts.
+    * \ingroup installer
+    * 
+    * After an RFC connection is opened to the RFC library, and before the first RFC call is executed over
+    * this connection, the RFC library calls this callback function, if installed.
+    * Here you can implement a central authentication check, defining exactly which entity
+    * is allowed to execute the function in your RFC server program.
+    * The actual function module implementations can then concentrate on their business logic and don't
+    * need to pay attention to access and authentication checks.
+    * 
+    * \in onAuthenticationCheck Pointer to a function of type RFC_ON_AUTHENTICATION_CHECK. The RFC lib calls this function, whenever a new RFC connection to this server is first opened by the client.
+    * \out *errorInfo Additional information, in case the handler could not be installed.
+    * \return RFC_RC
+    */
+    DECL_EXP RFC_RC SAP_API RfcInstallAuthenticationCheckHandler(RFC_ON_AUTHENTICATION_CHECK onAuthenticationCheck, RFC_ERROR_INFO* errorInfo);
+
+    /** \brief  Gets the type of authentication data received from the backend in RFC_ON_AUTHENTICATION_CHECK.
+    * \ingroup autoserver
+    *
+    * If a handler of type RFC_ON_AUTHENTICATION_CHECK is installed, this getter returns the type of authentication data that was received from
+    * the backend. The authentication method can be customized in the SM59 destination in the backend. The received authentication data is stored
+    * in the authentication handle, which can then by queried by the authentication handler RFC_ON_AUTHENTICATION_CHECK.
+    *
+    * \in authenticationHandle A handle representing the authentication data passed into RFC_ON_AUTHENTICATION_CHECK.
+    * \out *type The type of authentication method used by the backend.
+    * \out *errorInfo Additional error information in case changing the state fails, e.g. invalid handle, null pointer, etc.
+    * \return RFC_RC
+    */
+    DECL_EXP RFC_RC SAP_API RfcGetAuthenticationType(RFC_AUTHENTICATION_HANDLE authenticationHandle, RFC_AUTHENTICATION_TYPE* type, RFC_ERROR_INFO* errorInfo);
+    
+    /** \brief  Gets the user to authenticate in RFC_ON_AUTHENTICATION_CHECK if any is received.
+    * \ingroup autoserver
+    *
+    * If a handler of type RFC_ON_AUTHENTICATION_CHECK is installed, this getter returns the user to authenticate set in the destination in the backend.
+    * This could also be the alias user.
+    * The received authentication data is stored in the authentication handle, which can then by queried by 
+    * the authentication handler RFC_ON_AUTHENTICATION_CHECK.
+    *
+    * \in authenticationHandle A handle representing the authentication data passed into RFC_ON_AUTHENTICATION_CHECK.
+    * \out **user User to authenticate.
+    * \out *length String length of user.
+    * \out *errorInfo Additional error information in case changing the state fails, e.g. invalid handle, null pointer, etc.
+    * \return RFC_RC
+    */
+    DECL_EXP RFC_RC SAP_API RfcGetAuthenticationUser(RFC_AUTHENTICATION_HANDLE authenticationHandle, const SAP_UC** user, unsigned* length, RFC_ERROR_INFO* errorInfo);
+    
+    /** \brief  Gets the password for authentication in RFC_ON_AUTHENTICATION_CHECK if basic authentication method was setup in the backend.
+    * \ingroup autoserver
+    *
+    * If a handler of type RFC_ON_AUTHENTICATION_CHECK is installed, this getter returns the password for authentication set in the destination in the backend, i.e.
+    * basic authentication was setup.
+    * The received authentication data is stored in the authentication handle, which can then by queried by 
+    * the authentication handler RFC_ON_AUTHENTICATION_CHECK.
+    *
+    * \in authenticationHandle A handle representing the authentication data passed into RFC_ON_AUTHENTICATION_CHECK.
+    * \out **password The user's password for basic authentication. NULL if otherwise.
+    * \out *length String length of password.
+    * \out *errorInfo Additional error information in case changing the state fails, e.g. invalid handle, null pointer, etc.
+    * \return RFC_RC
+    */
+    DECL_EXP RFC_RC SAP_API RfcGetAuthenticationPassword(RFC_AUTHENTICATION_HANDLE authenticationHandle, const SAP_UC** password, unsigned* length, RFC_ERROR_INFO* errorInfo);
+    
+    /** \brief  Gets the assertionTicket for authentication in RFC_ON_AUTHENTICATION_CHECK if SSO based authentication method was setup in the backend.
+    * \ingroup autoserver
+    *
+    * If a handler of type RFC_ON_AUTHENTICATION_CHECK is installed, this getter returns the assertionTicket for authentication set in the destination in the backend, i.e.
+    * SSO authentication was setup.
+    * The received authentication data is stored in the authentication handle, which can then by queried by 
+    * the authentication handler RFC_ON_AUTHENTICATION_CHECK.
+    *
+    * \in authenticationHandle A handle representing the authentication data passed into RFC_ON_AUTHENTICATION_CHECK.
+    * \out **assertionTicket Assertion ticket for SSO authentication. NULL if otherwise.
+    * \out *length String length of assertionTicket.
+    * \out *errorInfo Additional error information in case changing the state fails, e.g. invalid handle, null pointer, etc.
+    * \return RFC_RC
+    */
+    DECL_EXP RFC_RC SAP_API RfcGetAuthenticationAssertionTicket(RFC_AUTHENTICATION_HANDLE authenticationHandle, const SAP_UC** assertionTicket, unsigned* length, RFC_ERROR_INFO* errorInfo);
+    
+    /** \brief  Gets the certificate chain for authentication in RFC_ON_AUTHENTICATION_CHECK if x509 authentication method was setup in the backend.
+    * \ingroup autoserver
+    *
+    * If a handler of type RFC_ON_AUTHENTICATION_CHECK is installed, this getter returns the certificate chain for authentication set in the destination in the backend, i.e.
+    * x509 authentication was setup. The certificate chain is stored as a singly linked list.
+    * The received authentication data is stored in the authentication handle, which can then by queried by 
+    * the authentication handler RFC_ON_AUTHENTICATION_CHECK.
+    *
+    * \in authenticationHandle A handle representing the authentication data passed into RFC_ON_AUTHENTICATION_CHECK.
+    * \out **certificateData Singly linked list of certificate attributes for x509 authentication. NULL if otherwise.
+    * \out *errorInfo Additional error information in case changing the state fails, e.g. invalid handle, null pointer, etc.
+    * \return RFC_RC
+    */
+    DECL_EXP RFC_RC SAP_API RfcGetAuthenticationCertificateData(RFC_AUTHENTICATION_HANDLE authenticationHandle, const RFC_CERTIFICATE_DATA** certificateData, RFC_ERROR_INFO* errorInfo);
 
     /* ***********************************************************************/
     /*                                                                       */
@@ -1814,6 +2105,27 @@ extern "C"
 	 * \return RFC_RC
 	 */
 	DECL_EXP RFC_RC SAP_API RfcConfirmTransaction(RFC_TRANSACTION_HANDLE tHandle, RFC_ERROR_INFO* errorInfo);
+
+
+	/**
+	 * \brief  Convenience function to remove the TID contained in a previous RFC_TRANSACTION_HANDLE from the backend's ARFCRSTATE table,
+	 * without the need of still having the RFC_TRANSACTION_HANDLE at hand.
+	 * \ingroup transaction
+	 *
+	 * After RfcSubmitTransaction() has finally succeeded, call %RfcConfirmTransactionID() to clean up the
+	 * transaction handling table in the backend. This function can be called after the RFC_TRANSACTION_HANDLE has
+	 * already been deleted.
+	 * \warning Attention: after this call, the backend is no longer protected against this TID. So another
+	 * RfcSubmitTransaction() with the same transaction handle would result in a duplicate.
+	 *
+	 *
+	 * \in rfcHandle A connection into the same system, into which the corresponding transaction has been sent via RfcSubmitTransaction().
+	 * \in tid A unique 24 character ID.
+	 * \out *errorInfo Additional error information in case of a network problem.
+	 * \warning You may retry the Confirm step, if you get an error here, but do not retry the Submit step!
+	 * \return RFC_RC
+	 */
+	DECL_EXP RFC_RC SAP_API RfcConfirmTransactionID(RFC_CONNECTION_HANDLE rfcHandle, RFC_TID tid, RFC_ERROR_INFO* errorInfo);
 
 	/**
 	 * \brief  Releases the memory of the transaction container.
@@ -2602,6 +2914,7 @@ extern "C"
      * - RFCTYPE_DECFxx
      * - RFCTYPE_BYTE
      * - RFCTYPE_XSTRING
+     * - RFCTYPE_UTCLONG
 	 *
 	 *
 	 * \in dataHandle A data container (function handle, structure handle or table handle). If dataHandle
@@ -2779,6 +3092,7 @@ extern "C"
      * - RFCTYPE_DECFxx
      * - RFCTYPE_BYTE
      * - RFCTYPE_XSTRING
+     * - RFCTYPE_UTCLONG
 	 *
 	 *
 	 * \in dataHandle A data container (function handle, structure handle or table handle). If dataHandle
@@ -2816,7 +3130,7 @@ extern "C"
 	 */
 	DECL_EXP RFC_RC SAP_API RfcGetStringByIndex(DATA_CONTAINER_HANDLE dataHandle, unsigned index, SAP_UC *stringBuffer, unsigned bufferLength, unsigned* stringLength, RFC_ERROR_INFO* errorInfo);
 
-	/**
+    /**
 	 * \brief  Returns the value of the specified field as byte array.
 	 * \ingroup container
 	 *
@@ -2961,6 +3275,7 @@ extern "C"
 	 * \out *errorInfo More information in case the field does not exist or a conversion fails.
 	 * \return RFC_RC
 	 */
+
 	DECL_EXP RFC_RC SAP_API RfcGetInt(DATA_CONTAINER_HANDLE dataHandle, SAP_UC const* name, RFC_INT  *value, RFC_ERROR_INFO* errorInfo);
 
 	/**
@@ -3085,6 +3400,7 @@ extern "C"
 	* - RFCTYPE_INT1
 	* - RFCTYPE_BYTE     is interpreted as big endian sequence of a long long
 	* - RFCTYPE_XSTRING  is interpreted as big endian sequence of a long long
+    * - RFCTYPE_UTCLONG
 	*
 	*
 	* \in dataHandle A data container (function handle, structure handle or table handle). If dataHandle
@@ -3163,6 +3479,7 @@ extern "C"
      * - RFCTYPE_DECF34
      * - RFCTYPE_FLOAT
      * - RFCTYPE_BCD
+	 * - RFCTYPE_INT8
      * - RFCTYPE_INT
      * - RFCTYPE_INT2
      * - RFCTYPE_INT1
@@ -3212,6 +3529,7 @@ extern "C"
      * - RFCTYPE_DECF34
      * - RFCTYPE_FLOAT
      * - RFCTYPE_BCD
+	 * - RFCTYPE_INT8
      * - RFCTYPE_INT
      * - RFCTYPE_INT2
      * - RFCTYPE_INT1
@@ -3453,6 +3771,8 @@ extern "C"
      * - RFCTYPE_DECFxx
      * - RFCTYPE_BYTE
      * - RFCTYPE_XSTRING
+     * - RFCTYPE_UTCLONG
+	 *
      * \note If the target field is a numerical type, the RFC library tries to convert the string
 	 * to a number. If the target field has type BYTE or XSTRING, the char value will be interpreted as
      * hex encoded string representation of the bytes. Its length needs to be even in that case.\n
@@ -3542,6 +3862,8 @@ extern "C"
      * - RFCTYPE_DECFxx
      * - RFCTYPE_BYTE
      * - RFCTYPE_XSTRING
+     * - RFCTYPE_UTCLONG
+	 *
      * \note If the target field is a numerical type, the RFC library tries to convert the string
 	 * to a number. If the target field has type BYTE or XSTRING, the char value will be interpreted as
      * hex encoded string representation of the bytes. Its length needs to be even in that case.\n
@@ -3753,13 +4075,17 @@ extern "C"
 	 * \brief  Sets the value of an INT4 field.
 	 * \ingroup container
 	 * 
-	 * The target field needs to be of type RFCTYPE_INT.
+	 * The field specified by name needs to be of one of the following data types:
+     * - RFCTYPE_CHAR
+     * - RFCTYPE_STRING
+     * - RFCTYPE_INTx
+     * - RFCTYPE_DECFxx
 	 *
 	 * \in dataHandle A data container (function handle, structure handle or table handle). If dataHandle
 	 * is a table handle, the function will set the field value of the current row.
 	 * \in *name The name of the field to set.
 	 * \in value The integer value to set.
-	 * \out *errorInfo Field does not exist or is not of type INT4?
+	 * \out *errorInfo More information in case the field does not exist or a conversion fails.
 	 * \return RFC_RC
 	 */
 	DECL_EXP RFC_RC SAP_API RfcSetInt(DATA_CONTAINER_HANDLE dataHandle, SAP_UC const* name, const RFC_INT  value, RFC_ERROR_INFO* errorInfo);
@@ -3777,7 +4103,7 @@ extern "C"
 	 * is a table handle, the function will set the field value of the current row.
 	 * \in *index The index of the field to set.
 	 * \in value The integer value to set.
-	 * \out *errorInfo Field does not exist or is not of type INT4?
+	 * \out *errorInfo More information in case the field does not exist or a conversion fails.
 	 * \return RFC_RC
 	 */
 	DECL_EXP RFC_RC SAP_API RfcSetIntByIndex(DATA_CONTAINER_HANDLE dataHandle, unsigned index, const RFC_INT  value, RFC_ERROR_INFO* errorInfo);
@@ -3786,13 +4112,17 @@ extern "C"
 	 * \brief  Sets the value of an INT1 field.
 	 * \ingroup container
 	 * 
-	 * The target field needs to be of type RFCTYPE_INT1.
+	 * The field specified by name needs to be of one of the following data types:
+     * - RFCTYPE_CHAR
+     * - RFCTYPE_STRING
+     * - RFCTYPE_INTx
+     * - RFCTYPE_DECFxx
 	 *
 	 * \in dataHandle A data container (function handle, structure handle or table handle). If dataHandle
 	 * is a table handle, the function will set the field value of the current row.
 	 * \in *name The name of the field to set.
 	 * \in value The integer value to set.
-	 * \out *errorInfo Field does not exist or is not of type INT1?
+	 * \out *errorInfo More information in case the field does not exist or a conversion fails.
 	 * \return RFC_RC
 	 */
 	DECL_EXP RFC_RC SAP_API RfcSetInt1(DATA_CONTAINER_HANDLE dataHandle, SAP_UC const* name, const RFC_INT1 value, RFC_ERROR_INFO* errorInfo);
@@ -3810,7 +4140,7 @@ extern "C"
 	 * is a table handle, the function will set the field value of the current row.
 	 * \in *index The index of the field to set.
 	 * \in value The integer value to set.
-	 * \out *errorInfo Field does not exist or is not of type INT1?
+	 * \out *errorInfo More information in case the field does not exist or a conversion fails.
 	 * \return RFC_RC
 	 */
 	DECL_EXP RFC_RC SAP_API RfcSetInt1ByIndex(DATA_CONTAINER_HANDLE dataHandle, unsigned index, const RFC_INT1 value, RFC_ERROR_INFO* errorInfo);
@@ -3819,13 +4149,17 @@ extern "C"
 	 * \brief  Sets the value of an INT2 field.
 	 * \ingroup container
 	 * 
-	 * The target field needs to be of type RFCTYPE_INT2.
+	 * The field specified by name needs to be of one of the following data types:
+     * - RFCTYPE_CHAR
+     * - RFCTYPE_STRING
+     * - RFCTYPE_INTx
+     * - RFCTYPE_DECFxx
 	 *
 	 * \in dataHandle A data container (function handle, structure handle or table handle). If dataHandle
 	 * is a table handle, the function will set the field value of the current row.
 	 * \in *name The name of the field to set.
 	 * \in value The integer value to set.
-	 * \out *errorInfo Field does not exist or is not of type INT2?
+	 * \out *errorInfo More information in case the field does not exist or a conversion fails.
 	 * \return RFC_RC
 	 */
 	DECL_EXP RFC_RC SAP_API RfcSetInt2(DATA_CONTAINER_HANDLE dataHandle, SAP_UC const* name, const RFC_INT2 value, RFC_ERROR_INFO* errorInfo);
@@ -3843,43 +4177,47 @@ extern "C"
 	 * is a table handle, the function will set the field value of the current row.
 	 * \in *index The index of the field to set.
 	 * \in value The integer value to set.
-	 * \out *errorInfo Field does not exist or is not of type INT2?
+	 * \out *errorInfo More information in case the field does not exist or a conversion fails.
 	 * \return RFC_RC
 	 */
 	DECL_EXP RFC_RC SAP_API RfcSetInt2ByIndex(DATA_CONTAINER_HANDLE dataHandle, unsigned index, const RFC_INT2 value, RFC_ERROR_INFO* errorInfo);
 
-
 	/**
-	* \brief  Sets the value of an INT8 field.
-	* \ingroup container
-	*
-	* The target field needs to be of type RFCTYPE_INT8.
-	*
-	* \in dataHandle A data container (function handle, structure handle or table handle). If dataHandle
-	* is a table handle, the function will set the field value of the current row.
-	* \in *name The name of the field to set.
-	* \in value The integer value to set.
-	* \out *errorInfo Field does not exist or is not of type INT8?
-	* \return RFC_RC
-	*/
+	 * \brief  Sets the value of an INT8 field.
+	 * \ingroup container
+	 *
+	 * The field specified by name needs to be of one of the following data types:
+     * - RFCTYPE_CHAR
+     * - RFCTYPE_STRING
+     * - RFCTYPE_INTx
+     * - RFCTYPE_DECFxx
+	 * - RFCTYPE_UTCLONG.
+	 *
+	 * \in dataHandle A data container (function handle, structure handle or table handle). If dataHandle
+	 * is a table handle, the function will set the field value of the current row.
+	 * \in *name The name of the field to set.
+	 * \in value The integer value to set.
+	 * \out *errorInfo More information in case the field does not exist or a conversion fails.
+	 * \return RFC_RC
+	 */
 	DECL_EXP RFC_RC SAP_API RfcSetInt8(DATA_CONTAINER_HANDLE dataHandle, SAP_UC const* name, const RFC_INT8 value, RFC_ERROR_INFO* errorInfo);
 
 	/**
-	* \brief  Sets the value of an INT8 field.
-	* \ingroup container
-	*
-	* This function works exactly like RfcSetInt8(), the difference being that the field is
-	* addressed by its index within the structure/table/function module. The first field has index 0,
-	* last field has index n-1, the order of the fields is as defined in the ABAP DDIC.
-	*
-	*
-	* \in dataHandle A data container (function handle, structure handle or table handle). If dataHandle
-	* is a table handle, the function will set the field value of the current row.
-	* \in *index The index of the field to set.
-	* \in value The integer value to set.
-	* \out *errorInfo Field does not exist or is not of type INT8?
-	* \return RFC_RC
-	*/
+	 * \brief  Sets the value of an INT8 field.
+	 * \ingroup container
+	 *
+	 * This function works exactly like RfcSetInt8(), the difference being that the field is
+	 * addressed by its index within the structure/table/function module. The first field has index 0,
+	 * last field has index n-1, the order of the fields is as defined in the ABAP DDIC.
+	 *
+	 *
+	 * \in dataHandle A data container (function handle, structure handle or table handle). If dataHandle
+	 * is a table handle, the function will set the field value of the current row.
+	 * \in *index The index of the field to set.
+	 * \in value The integer value to set.
+	 * \out *errorInfo More information in case the field does not exist or a conversion fails.
+	 * \return RFC_RC
+	 */
 	DECL_EXP RFC_RC SAP_API RfcSetInt8ByIndex(DATA_CONTAINER_HANDLE dataHandle, unsigned index, const RFC_INT8 value, RFC_ERROR_INFO* errorInfo);
 
 
@@ -4455,11 +4793,11 @@ extern "C"
     * \brief  Stores the currently cached objects of a repository into a JSON formatted text file.
     * \ingroup repository
     *
-    * This function will create a JSON formatted text file that contains all currently cached function modules with their parameters,
-    * so it can be reloaded at another time (see RfcLoadRepository) without opening connections to the backend and fetching metadata.
-    * This stored JSON file can be used by all other SAP Connectors, i. e. SAP dotNet Connector and SAP Java Connector
+    * This function will create a JSON formatted text file that contains all currently cached function module descriptions with their parameters,
+    * so it can be reloaded at another time (see RfcLoadRepository()) without opening connections to the backend and fetching metadata from the DDIC.
+    * This JSON file can also be used by the SAP .NET Connector and SAP Java Connector.
     *
-    * \in *repositoryID System ID of R/3 System, whose cache you want to save.
+    * \in *repositoryID System ID of R/3 System, whose cache you want to save, or NULL for the default cache.
     * \in *targetStream FILE pointer opened by the user.
     * \out *errorInfo More error details in case something goes wrong.
     * \return RFC_RC
@@ -4468,15 +4806,24 @@ extern "C"
 
 
     /**
-    * \brief  Retreives metadata from JSON formatted text file and creates the according repository to use for function calls.
+    * \brief  Retrieves metadata from a JSON formatted text file and creates the according repository to use for function calls.
     * \ingroup repository
     *
-    * This function will create a repository with the according functions and parameters read from the JSON formatted text file
-    * (see RfcSaveRepository). The functions and their parameters will then be cached and can be used for any call like they were 
-    * created by fetching the metadata from the backend. It is possible to use any JSON formatted text file created by any other SAP Connector.
+    * This function will create a repository with the given ID - or a default repository, if the ID is NULL - and populate it with
+	* the function descriptions and parameter descriptions contained in the JSON formatted text file (see RfcSaveRepository()).
+    * That way the RFC program does not need to fetch the metadata from the backend DDIC, which is useful, if you want to
+	* improve the startup performance of your program or if your program is an RFC server that does not have login parameters
+	* for the backend.
+    * It is also possible to use JSON files created by SAP .NET Connector and SAP Java Connector.
     *
+	* \note Special care needs to be taken to guarantee that the loaded metadata indeed matches the function and structure
+	* descriptions defined in the backend system(s) against which it is to be used. Otherwise the risk of data corruption is very high.
+	* \note If a repository with the given ID already exists, %RfcLoadRepository() will delete it and replace it with the contents
+	* of the JSON file.
+	* 
     *
-    * \in *repositoryID System ID of R/3 System, whose cache you want to save.
+    * \in *repositoryID System ID of R/3 System, for which you want to use the metadata contained in the JSON file, or NULL
+	* for the default repository.
     * \in *targetStream FILE pointer opened by the user.
     * \out *errorInfo More error details in case something goes wrong.
     * \return RFC_RC
@@ -5141,13 +5488,13 @@ extern "C"
 
     /* ***********************************************************************/
     /*                                                                       */
-    /*  JCo-like Throughput API                                              */
+    /*  Throughput API                                              */
     /*                                                                       */
     /* ***********************************************************************/
 
 
     /**
-    * \brief  Creates a JCo-like throughput object that can be used to measure performance relevant data of connections and servers.
+    * \brief  Creates a throughput object that can be used to measure performance relevant data of connections and servers.
     * \ingroup throughput
     * 
     * The created throughput object can be attached to a connection (via RfcSetThroughputOnConnection()) or an automated server (via RfcSetThroughputOnServer())
@@ -5184,6 +5531,12 @@ extern "C"
     * 
     * Once attached to a connection, the throughput object will collect data of the function calls invoked via this connection.
     * If there is already another throughput obejct attached to the connection, the old one will be replaced by the given one.
+	* The below chart shows a simplified view how the different time measurements apply for a client call.
+	*
+	* Client                                            Server (backend)                                       Client
+	*      
+	*	     API begin   serialization   writing       server time        reading   deserialization   API return
+	*      ____________|_______________|_________   _|_____________|_    _________|_________________|____________
     * 
     * \in rfcHandle A handle to a currently open RFC connection (client or server connection).
     * \in throughput A handle to the throughput object.
@@ -5225,6 +5578,13 @@ extern "C"
     * As the automated server handles its connections by itself, it will also attach the throughput to all of its connections 
     * and to all connections that might be re-opened.
     * If there is already another throughput attached to the server, the old one will be replaced by the given one.
+	* The below chart shows a simplified view how the different time measurements apply for a call received by the server.
+	*
+	* Client                                            automated Server                                                    Client
+	*
+	*	    call begin       (accepting)   reading   deserialization   C-application   serialization   writing       call end
+	*      ____________|_   _____________|_________|_________________|_______________|_______________|_________   _|___________
+	*
     * 
     * \in serverHandle A handle to the server object.
     * \in throughput A handle to the throughput object.
@@ -5290,9 +5650,10 @@ extern "C"
     *
     * If a throughput object is attached to several connections or servers, this is the total time of all processed calls.
     * This time includes serialization, deserialization, reading from network, writing to network and time consumed in the backend.
+	* In case of a server it also includes time accepting a connection.
     * An approximation of the time for transmission and execution in the backend is defined by
     *
-    *    totalTime - serializationTime - deserializationTime (- applicationTime)
+    *    totalTime - serializationTime - deserializationTime (- applicationTime) 
     * 
     * 
     * \in throughput A handle to the throughput object.
@@ -5309,7 +5670,7 @@ extern "C"
     *
     * If a throughput object is attached to several connections or servers, this is the serialization time of all processed calls.
 	* Serialization time is defined as the time needed for transforming C/C++ data types into a byte stream that can be sent
-    * over the network. This includes time needed for codepage conversions, endianess conversions etc., but not the time consumed
+    * over the network. This includes time needed for codepage conversions, endianness conversions etc., but not the time consumed
 	* by writing to the network.  
     *
     * \in throughput A handle to the throughput object.
@@ -5326,7 +5687,7 @@ extern "C"
     *
     * If a throughput object is attached to several connections or servers, this is the deserialization time of all processed calls.
 	* Deserialization time is defined as the time needed for transforming a byte stream received from the network connection into
-	* C/C++ data types that can be used by the application. This includes time needed for codepage conversions, endianess conversions etc.,
+	* C/C++ data types that can be used by the application. This includes time needed for codepage conversions, endianness conversions etc.,
     * but not the time consumed by reading from the network.
     * 
     * \in throughput A handle to the throughput object.
@@ -5342,9 +5703,9 @@ extern "C"
 	* since it was attached or since the last reset.
     * \ingroup throughput
     *
-	* This value is colleted only in the case of server connections. (In the client case, function modules are of course
+	* This value is collected only in the case of server connections. (In the client case, function modules are of course
 	* implemented in ABAP, not in C, and their time is included in the backend time.)
-    * If a throughput is attached to several connections or servers, this is the deserialization time of all invoked calls.
+    * If a throughput is attached to several connections or servers, this is the application time of all invoked calls.
     * 
     * \in throughput A handle to the throughput object.
     * \out *applicationTime Cumulated time all C impelementations of ABAP function modules took. The unit is milliseconds.
@@ -5354,6 +5715,52 @@ extern "C"
     DECL_EXP RFC_RC SAP_API RfcGetApplicationTime(RFC_THROUGHPUT_HANDLE throughput, SAP_ULLONG* applicationTime, RFC_ERROR_INFO* errorInfo);
 
 
+	/**
+	* \brief  Returns the cumulated execution time of the requests at the server, that the throughput object recorded
+	* since it was attached or since the last reset.
+	* \ingroup throughput
+	*
+	* If a throughput object is attached to several connections or servers, this is the server time of all processed calls.
+	* This value is measured at the backend by the partner and transmitted in the RFC data payload.
+	*
+	* \in throughput A handle to the throughput object.
+	* \out *serverTime Cumulated time spent at the server side for the requests. The unit is milliseconds.
+	* \out *errorInfo More details in error case.
+	* \return RFC_RC
+	*/
+	DECL_EXP RFC_RC SAP_API RfcGetServerTime(RFC_THROUGHPUT_HANDLE throughput, SAP_ULLONG* serverTime, RFC_ERROR_INFO* errorInfo);
+
+	/**
+    * \brief  Returns the cumulated time that is used to write to network during the requests, that the throughput object recorded
+    * since it was attached or since the last reset.
+    * \ingroup throughput
+    *
+    * If a throughput object is attached to several connections or servers, this is the time used to write to network of all processed calls.
+    * The time measures calls to underlying libraries such an NI functions and operating socket functions. Those times might not correctly represent the time
+	* that is needed to send the data, as there are asynchronous IO functions used or the OS is responsible for sending the data.
+    *
+    * \in throughput A handle to the throughput object.
+    * \out *writingTime Cumulated time spent writing to the network. The unit is milliseconds.
+    * \out *errorInfo More details in error case.
+    * \return RFC_RC
+    */
+	DECL_EXP RFC_RC SAP_API RfcGetNetworkWritingTime(RFC_THROUGHPUT_HANDLE throughput, SAP_ULLONG* writingTime, RFC_ERROR_INFO* errorInfo);
+
+	/**
+	* \brief  Returns the cumulated time that is used to read from the network during the requests, that the throughput object recorded
+	* since it was attached or since the last reset.
+	* \ingroup throughput
+	*
+	* If a throughput object is attached to several connections or servers, this is the time used to read from the network of all processed calls.
+	* The time measures calls to underlying libraries such an NI functions and operating socket functions. Those times might not correctly represent the time
+	* that is needed to receive the data, as there are asynchronous IO functions used or the OS is responsible for receiving the data.
+	*
+	* \in throughput A handle to the throughput object.
+	* \out *readingTime Cumulated time spent reading from the network. The unit is milliseconds.
+	* \out *errorInfo More details in error case.
+	* \return RFC_RC
+	*/
+	DECL_EXP RFC_RC SAP_API RfcGetNetworkReadingTime(RFC_THROUGHPUT_HANDLE throughput, SAP_ULLONG* readingTime, RFC_ERROR_INFO* errorInfo);
     /**
     * \brief  Returns the cumulated amount of sent bytes the throughput object recorded since it was attached or since the last reset.
     * \ingroup throughput
@@ -5381,6 +5788,64 @@ extern "C"
     */
     DECL_EXP RFC_RC SAP_API RfcGetReceivedBytes(RFC_THROUGHPUT_HANDLE throughput, SAP_ULLONG* receivedBytes, RFC_ERROR_INFO* errorInfo);
 
+
+	/**
+	* \brief  Set Timeout for Message Server Response 
+	*
+	* During Group Logon and during Group Registration (registration of an RFC server at multiple gateways),
+	* the NW RFC library sends requests to the message server, asking for the currently "least busy" application
+	* server (load balancing) or for a list of all application servers contained in a group.
+	* This timeout specifies, how long the NW RFC library will wait for the corresponding responses from the
+	* message server, before aborting with a timeout error.
+	*
+	* \in timeout Timeout in seconds
+    * \out *errorInfo More details in error case.
+	* \return RFC_RC
+	*/
+	DECL_EXP RFC_RC SAP_API RfcSetMessageServerResponseTimeout(unsigned timeout, RFC_ERROR_INFO* errorInfo);
+
+
+	/**
+	* \brief  Sets the maximum number of concurrent CPIC conversations.
+	*
+	* The API can only be called if there are no current CPIC conversations active. A number smaller than the current maximum
+	* will be ignored.
+	* The default value is 200.
+	* 
+	* The number can also be increased by setting MAX_CPIC_CONVERSATIONS in the DEFAULT section of the sapnwrfc.ini file.
+	*
+	* \in maxCpicConversations Maximum of concurrent CPIC conversations
+	* \out *errorInfo More details in error case.
+	* \return RFC_RC
+	*/
+	DECL_EXP RFC_RC SAP_API RfcSetMaximumCpicConversations(unsigned maxCpicConversations, RFC_ERROR_INFO* errorInfo);
+
+	/**
+	* \brief  Gets the maximum number of parallel CPIC conversations.
+	*
+	* The default value is 200.
+	*
+	* \in *maxCpicConversations Current maximum of parallel CPIC conversations
+	* \out *errorInfo More details in error case.
+	* \return RFC_RC
+	*/
+	DECL_EXP RFC_RC SAP_API RfcGetMaximumCpicConversations(unsigned* maxCpicConversations, RFC_ERROR_INFO* errorInfo);
+
+
+	/**
+	* \brief  Sets the global logon timeout in seconds.
+	*
+	* Sets the timeout for how long the logon in the ABAP backend can take during RfcOpenConnection().
+	* The valid range of values is [1,3600].
+	* The default value is 60 seconds.
+	*
+	* The timeout can also be set via RFC_GLOBAL_LOGON_TIMEOUT in the DEFAULT section of the sapnwrfc.ini file.
+	*
+	* \in logonTimeout gloabl logon timeout in seconds.
+	* \out *errorInfo More details in error case.
+	* \return RFC_RC
+	*/
+	DECL_EXP RFC_RC SAP_API RfcSetGlobalLogonTimeout(unsigned logonTimeout, RFC_ERROR_INFO* errorInfo);
 
 #ifdef __cplusplus
 }

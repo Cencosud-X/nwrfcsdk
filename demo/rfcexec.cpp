@@ -10,6 +10,7 @@
 #include <process.h>
 #include <windows.h>
 #include <tchar.h>
+#include <io.h>
 #else
 #include <sys/types.h>
 #include <unistd.h>
@@ -57,21 +58,631 @@
 #    endif
 #endif
 
+#ifdef SAPonNT
+#ifndef R_OK
+#define R_OK 4
+#endif // !R_OK
+#ifndef F_OK
+#define F_OK 0
+#endif // !F_OK
+#endif
+
 #define ERROR_MESSAGE_SIZE 511
 
-/**
+
+ /**
+ * \brief Helper function to remove leading whitespaces 
  * \ingroup rfcexec
  *
- * \version 1.0
- * First version of rfcexec program. Only RFC_REMOTE_EXEC is implemented.
- *
- * \date 02-25-2008
- *
- * \author d029216
  */
+SAP_UC* ltrim(SAP_UC* s)
+{
+	while (isspaceU(*s))
+		s++;
+	return s;
+}
 
-RFC_FUNCTION_DESC_HANDLE RfcExecServer::rfc_exec;
-RFC_FUNCTION_DESC_HANDLE RfcExecServer::rfc_pipe;
+/**
+* \brief Helper function to remove trailing whitespaces
+* \ingroup rfcexec
+*
+*/
+SAP_UC* rtrim(SAP_UC* s)
+{
+	SAP_UC* back = s + strlenU(s);
+	while (isspaceU(*--back))
+		;
+	*(back + 1) = '\0';
+	return s;
+}
+
+/**
+* \brief  Creates a hard-coded metadata description of the FM RFC_REMOTE_EXEC as used by
+* the ALE interface.
+* \ingroup rfcexec
+*
+* Note that the table PIPEDATA has been implemented by the original rfcexec program, but is
+* not used in the ALE standard functionality. Other EDI subsystems may use it though, therefore
+* it remains part of the interface.
+*/
+
+/* static */ RFC_FUNCTION_DESC_HANDLE RFC_REMOTE_EXEC_desc::RFC_REMOTE_EXEC = NULL;
+/* static */ RFC_FUNCTION_DESC_HANDLE RFC_REMOTE_EXEC_desc::RFC_REMOTE_PIPE = NULL;
+/* static */ RFC_TYPE_DESC_HANDLE RFC_REMOTE_EXEC_desc::PIPEDATA = NULL;
+
+
+/* static */ RFC_FUNCTION_DESC_HANDLE RFC_REMOTE_EXEC_desc::getRFC_REMOTE_EXEC_desc(void)
+{
+	if (RFC_REMOTE_EXEC == NULL)
+	{
+		/* in multithread environment we need to add mutex protection here, and try-catch */
+		if (RFC_REMOTE_EXEC == NULL)
+		{
+			RFC_ERROR_INFO errorInfo = RFC_ERROR_INFO();
+			RFC_REMOTE_EXEC = RfcCreateFunctionDesc(cU("RFC_REMOTE_EXEC"), &errorInfo);
+			if (RFC_REMOTE_EXEC == NULL)
+				throw RfcExecException(errorInfo.message, errorInfo.code);
+			add_RFC_REMOTE_EXEC_parameters(RFC_REMOTE_EXEC);
+		}
+	}
+
+	return RFC_REMOTE_EXEC;
+}
+/* static */ RFC_FUNCTION_DESC_HANDLE RFC_REMOTE_EXEC_desc::getRFC_REMOTE_PIPE_desc(void)
+{
+	if (RFC_REMOTE_PIPE == NULL)
+	{
+		/* in multithread environment we need to add mutex protection here, and try-catch */
+		if (RFC_REMOTE_PIPE == NULL)
+		{
+			RFC_ERROR_INFO errorInfo = RFC_ERROR_INFO();
+			RFC_REMOTE_PIPE = RfcCreateFunctionDesc(cU("RFC_REMOTE_PIPE"), &errorInfo);
+			if (RFC_REMOTE_PIPE == NULL)
+				throw RfcExecException(errorInfo.message, errorInfo.code);
+			add_RFC_REMOTE_EXEC_parameters(RFC_REMOTE_PIPE);
+		}
+	}
+	return RFC_REMOTE_PIPE;
+}
+/* static */ RFC_TYPE_DESC_HANDLE RFC_REMOTE_EXEC_desc::getPIPEDATA_desc(void)
+{
+	if (PIPEDATA == NULL)
+	{
+		/* in multithread environment we need to add mutex protection here, and try-catch */
+		if (PIPEDATA == NULL)
+		{
+			RFC_ERROR_INFO errorInfo = RFC_ERROR_INFO();
+			PIPEDATA = RfcCreateTypeDesc(cU("PIPEDATA"), &errorInfo);
+			if (PIPEDATA == NULL)
+				throw RfcExecException(errorInfo.message, errorInfo.code);
+
+			RFC_FIELD_DESC fieldDescr = RFC_FIELD_DESC();
+			/*CCQ_SECURE_LIB_OK*/
+			strncpyU(fieldDescr.name, cU("PIPEDATA"), 9);
+			fieldDescr.type = RFCTYPE_CHAR;
+			fieldDescr.nucLength = 80;
+			fieldDescr.nucOffset = 0;
+			fieldDescr.ucLength = 160;
+			fieldDescr.ucOffset = 0;
+			fieldDescr.decimals = 0;
+			fieldDescr.typeDescHandle = NULL;
+			fieldDescr.extendedDescription = NULL;
+			RFC_RC rc = RfcAddTypeField(PIPEDATA, &fieldDescr, &errorInfo);
+			if (rc != RFC_OK)
+				throw RfcExecException(errorInfo.message, errorInfo.code);
+
+			rc = RfcSetTypeLength(PIPEDATA, 80, 160, &errorInfo);
+			if (rc != RFC_OK)
+				throw RfcExecException(errorInfo.message, errorInfo.code);
+		}
+	}
+	return PIPEDATA;
+}
+/* static */ void RFC_REMOTE_EXEC_desc::add_RFC_REMOTE_EXEC_parameters(RFC_FUNCTION_DESC_HANDLE handle)
+{
+	RFC_ERROR_INFO errorInfo = RFC_ERROR_INFO();
+
+	{
+		RFC_PARAMETER_DESC paramDescr = RFC_PARAMETER_DESC();
+		/*CCQ_SECURE_LIB_OK*/
+		strncpyU(paramDescr.name, cU("COMMAND"), 8);
+		paramDescr.type = RFCTYPE_CHAR;
+		paramDescr.direction = RFC_IMPORT;
+		paramDescr.nucLength = 256;
+		paramDescr.ucLength = 512;
+		paramDescr.decimals = 0;
+		paramDescr.typeDescHandle = NULL;
+		const RFC_RC rc = RfcAddParameter(handle, &paramDescr, &errorInfo);
+		if (rc != RFC_OK)
+			throw RfcExecException(errorInfo.message, errorInfo.code);
+	}
+
+	{
+		RFC_PARAMETER_DESC paramDescr = RFC_PARAMETER_DESC();
+		/*CCQ_SECURE_LIB_OK*/
+		strncpyU(paramDescr.name, cU("READ"), 5);
+		paramDescr.type = RFCTYPE_CHAR;
+		paramDescr.direction = RFC_IMPORT;
+		paramDescr.nucLength = 1;
+		paramDescr.ucLength = 2;
+		paramDescr.decimals = 0;
+		paramDescr.typeDescHandle = NULL;
+		const RFC_RC rc = RfcAddParameter(handle, &paramDescr, &errorInfo);
+		if (rc != RFC_OK)
+			throw RfcExecException(errorInfo.message, errorInfo.code);
+	}
+
+	{
+		RFC_PARAMETER_DESC paramDescr = RFC_PARAMETER_DESC();
+		/*CCQ_SECURE_LIB_OK*/
+		strncpyU(paramDescr.name, cU("PIPEDATA"), 9);
+		paramDescr.type = RFCTYPE_TABLE;
+		paramDescr.direction = RFC_TABLES;
+		paramDescr.nucLength = 8;
+		paramDescr.ucLength = 8;
+		paramDescr.decimals = 0;
+		paramDescr.typeDescHandle = getPIPEDATA_desc();
+		const RFC_RC rc = RfcAddParameter(handle, &paramDescr, &errorInfo);
+		if (rc != RFC_OK)
+			throw RfcExecException(errorInfo.message, errorInfo.code);
+	}
+}
+/* static */ void RFC_REMOTE_EXEC_desc::deleteAll(void)
+{
+
+	RFC_ERROR_INFO errorInfo = RFC_ERROR_INFO();
+	if (RFC_REMOTE_EXEC)
+	{
+		RfcDestroyFunctionDesc(RFC_REMOTE_EXEC, &errorInfo);
+		RFC_REMOTE_EXEC = NULL;
+	}
+	if (RFC_REMOTE_PIPE)
+	{
+		RfcDestroyFunctionDesc(RFC_REMOTE_PIPE, &errorInfo);
+		RFC_REMOTE_PIPE = NULL;
+	}
+	if (PIPEDATA)
+	{
+		RfcDestroyTypeDesc(PIPEDATA, &errorInfo);
+		PIPEDATA = NULL;
+	}
+}
+
+
+/**
+ * \brief  Getter for the trace singleton.
+ * \ingroup rfcexec
+ *
+ */
+/* static */ Trace& Trace::get(void)
+{
+	static Trace instance;
+	return instance;
+}
+/**
+ * \brief  Constructor of trace singleton.
+ * \ingroup rfcexec
+ *
+ */
+Trace::Trace(void) : traceFile(NULL)
+{
+}
+/**
+ * \brief  Destructor of trace singleton.
+ * \ingroup rfcexec
+ *
+ * Will be called when the program ends.
+ */
+Trace::~Trace(void)
+{
+	close();
+}
+
+/**
+ * \brief  Checks if the traceFile was opened before.
+ * \ingroup rfcexec
+ *
+ */
+bool Trace::isOpen(void) const
+{
+	return traceFile != NULL;
+}
+/**
+ * \brief  Opens the trace file.
+ * \ingroup rfcexec
+ *
+ * We don't throw an error, if opening the trace file fails, because tracing should
+ * not disrupt the productive functionality of the program.
+ */
+void Trace::open(void)
+{
+	if (traceFile == NULL)
+	{
+		const time_t currTime = time(NULL);
+		SAP_UC tracefile_name[128] = iU("");
+		sprintfU(tracefile_name, /*CCQ_FORMAT_STRING_OK*/cU("rfcexec%.5d_%05") SAP_Fllu cU(".trc"), getpid(), static_cast<SAP_ULLONG>(currTime));
+		traceFile = fopenU(tracefile_name, cU("wt"));
+
+		if (traceFile)
+		{
+			SAP_UC cwd[512] = iU("");
+			write(cU("***** Rfcexec trace file opened at"), ctimeU(&currTime));
+			write(cU("NW RFC SDK Version"), RfcGetVersion(NULL, NULL, NULL));
+			getcwdU(cwd, sizeofU(cwd));
+			write(cU("***** Current working directory: "), cwd);
+		}
+	}
+}
+/**
+ * \brief  Writes an entry to the trace file.
+ * \ingroup rfcexec
+ *
+ * We don't throw an error, if writing the trace entry fails, because tracing should
+ * not disrupt the productive functionality of the program.
+ *
+ * \in key The "variable name" of the variable to trace, or a "heading".
+ * \in value The value of the variable to trace, or a "message".
+ * \in indent Start the line with a tabs. Optional. Default is off.
+ */
+void Trace::write(const SAP_UC* key, const SAP_UC* value, bool indent, bool newline)
+{
+	if (traceFile)
+	{
+		if (indent)
+			fprintfU(traceFile, cU("\t"));
+
+		fprintfU(traceFile, cU("%s"), key);
+		if (value)
+			fprintfU(traceFile, cU(":\t%s"), value);
+
+		if (newline)
+			fprintfU(traceFile, cU("\n"));
+		fflush(traceFile);
+	}
+}
+/**
+ * \brief  Closes the trace file.
+ * \ingroup rfcexec
+ */
+void Trace::close(void)
+{
+	if (traceFile)
+	{
+		const time_t currTime = time(NULL);
+		/*CCQ_CLIB_LOCTIME_OK*/
+		fprintfU(traceFile, cU("***** Rfcexec trace file closed at %s\n"), ctimeU(&currTime));
+		fclose(traceFile);
+		traceFile = NULL;
+	}
+}
+
+
+SecurityEntry::SecurityEntry(const SAP_UC* user, const SAP_UC* sysid, const SAP_UC* client, const SAP_UC* path) :
+	user(NULL), sysid(NULL), client(NULL), path(NULL)
+{
+	allocAndCopy(user, sysid, client, path);
+}
+SecurityEntry::SecurityEntry(SecurityEntry const& other)
+{
+	allocAndCopy(other.user, other.sysid, other.client, other.path);
+}
+SecurityEntry& SecurityEntry::operator=(SecurityEntry const& other)
+{
+	allocAndCopy(other.user, other.sysid, other.client, other.path);
+
+	return *this;
+}
+SecurityEntry::~SecurityEntry(void)
+{
+	if (user)
+	{
+		delete[] user;
+		user = NULL;
+	}
+	if (sysid)
+	{
+		delete[] sysid;
+		sysid = NULL;
+	}
+	if (client)
+	{
+		delete[] client;
+		client = NULL;
+	}
+	if (path)
+	{
+		delete[] path;
+		path = NULL;
+	}
+}
+void SecurityEntry::allocAndCopy(const SAP_UC* user, const SAP_UC* sysid, const SAP_UC* client, const SAP_UC* path)
+{
+	this->user = new SAP_UC[strlenU(user) + 1]();
+	strncpyU(this->user, user, strlenU(user));
+
+	this->sysid = new SAP_UC[strlenU(sysid) + 1]();
+	strncpyU(this->sysid, sysid, strlenU(sysid));
+
+	this->client = new SAP_UC[strlenU(client) + 1]();
+	strncpyU(this->client, client, strlenU(client));
+
+	this->path = new SAP_UC[strlenU(path) + 1]();
+	strncpyU(this->path, path, strlenU(path));
+}
+
+
+void Authorization::traceExecutionParameters(const SAP_UC* user, const SAP_UC* sysid, const SAP_UC* client, const SAP_UC* path, const SAP_UC* caller) const
+{
+	if (user)
+		Trace::get().write(cU("User"), user, true);
+	if (sysid)
+		Trace::get().write(cU("SysID"), sysid, true);
+	if (client)
+		Trace::get().write(cU("Client"), client, true);
+	if (path)
+		Trace::get().write(cU("Program"), path, true);
+	if (caller)
+		Trace::get().write(cU("Calling Report"), caller, true);
+}
+
+DefaultAuthorization::DefaultAuthorization(const SAP_UC* sys) : Authorization()
+{
+	system = sys;
+}
+DefaultAuthorization::~DefaultAuthorization(void)
+{
+}
+
+/**
+ * \brief  Checks whether the current SAP user is allowed to execute the given OS command.
+ * \ingroup rfcexec
+ *
+ * If the program has been started with the extra parameter -f \<filename>, the given user,
+ * SAP system ID, client and OS command and matched against the cached entries of the file.
+ * Access is allowed, only if an exact match can be found.
+ *
+ * Otherwise the program verifies only, that the call came from the correct SAP system and
+ * that the calling program is the ALE layer (SAPLEDI7).
+ *
+ * \in user The current backend user calling the server program
+ * \in sysid System ID of the calling backend
+ * \in client The Client ("Mandant", not the opposite of "Server"...!) from which the call came
+ * \in path The program to be started, given by relative or absolute path. Came from the
+ * function module import parameter COMMAND
+ * \in caller Name of the ABAP Report/Function Group, which issued the CALL FUNCTION statement.
+ * Used only in "default mode".
+ * \return true means: this call is allowed, false means: it's denied.
+ */
+bool DefaultAuthorization::isExecutionAllowed(const SAP_UC* user, const SAP_UC* sysid, const SAP_UC* client, const SAP_UC* path, const SAP_UC* caller) const
+{
+	traceExecutionParameters(user, sysid, client, path, caller);
+
+	bool isAuthorized = false;
+	if (caller  && strncmpU(caller, cU("SAPLEDI7"), strlenU(caller)) == 0 && (*system == cU('\0') || (sysid && strncmpU(sysid, system, strlenU(sysid)) == 0)))
+		isAuthorized = true;
+
+	return isAuthorized;
+}
+/**
+ * \brief  Prints the used security settings to the trace file.
+ * \ingroup rfcexec
+ */
+void DefaultAuthorization::traceSecurityInfo(void) const
+{
+	Trace::get().write(cU("Using default mode. Allowing connections only from Report SAPLEDI7 and System"), system);
+	Trace::get().write(cU("\t----------\n"), NULL);
+}
+
+
+
+SecFileAuthorization::SecFileAuthorization(void) : Authorization()
+{
+}
+SecFileAuthorization::~SecFileAuthorization(void)
+{
+}
+
+/**
+ * \brief  Checks whether the current SAP user is allowed to execute the given OS command.
+ * \ingroup rfcexec
+ *
+ * If the program has been started with the extra parameter -f \<filename>, the given user,
+ * SAP system ID, client and OS command and matched against the cached entries of the file.
+ * Access is allowed, only if an exact match can be found.
+ *
+ * Otherwise the program verifies only, that the call came from the correct SAP system and
+ * that the calling program is the ALE layer (SAPLEDI7).
+ *
+ * \in user The current backend user calling the server program
+ * \in sysid System ID of the calling backend
+ * \in client The Client ("Mandant", not the opposite of "Server"...!) from which the call came
+ * \in path The program to be started, given by relative or absolute path. Came from the
+ * function module import parameter COMMAND
+ * \in caller Name of the ABAP Report/Function Group, which issued the CALL FUNCTION statement.
+ * Used only in "default mode".
+ * \return true means: this call is allowed, false means: it's denied.
+ */
+bool SecFileAuthorization::isExecutionAllowed(const SAP_UC* user, const SAP_UC* sysid, const SAP_UC* client, const SAP_UC* path, const SAP_UC* caller) const
+{
+	traceExecutionParameters(user, sysid, client, path, caller);
+
+	bool isAuthorized = false;
+	for (std::vector<SecurityEntry>::const_iterator it = allowed.begin(); it != allowed.end(); ++it)
+	{
+		if (user && strncmpU(user, it->user, strlenU(user)) == 0
+			&& sysid && strncmpU(sysid, it->sysid, strlenU(sysid)) == 0
+			&& client && strncmpU(client, it->client, strlenU(client)) == 0
+			&& path && (strncmpU(cU("*"), it->path, 1) == 0 || strncmpU(path, it->path, strlenU(path))))
+		{
+			isAuthorized = true;
+			break;
+		}
+	}
+	return isAuthorized;
+}
+/**
+ * \brief  Prints the used security settings to the trace file.
+ * \ingroup rfcexec
+ */
+void SecFileAuthorization::traceSecurityInfo(void) const
+{
+	Trace::get().write(cU("Using secure mode. Allowing connections only for the following USER:SYSID:CLIENT:PROGRAM combinations"), NULL);
+	for (std::vector<SecurityEntry>::const_iterator it = allowed.begin(); it != allowed.end(); ++it)
+	{
+		Trace::get().write(cU("USER="), it->user, true, false);
+		Trace::get().write(cU(", SYSID="), it->sysid, true, false);
+		Trace::get().write(cU(", CLIENT="), it->client, true, false);
+		Trace::get().write(cU(", PATH="), it->path, true);
+	}
+	Trace::get().write(cU("\t----------\n"), NULL);
+}
+/**
+ * \brief  Parses the file containing detailed access restrictions for this program.
+ * \ingroup rfcexec
+ *
+ * This program can be started with an additional file containing detailed information about
+ * which SAP user from which R/3 system and which client may execute which OS command.
+ * Each line of the file must be in the following format:
+ *
+ * USER=EDIUSER,SYSID=XYZ,CLIENT=000,PATH=/usr/bin/edi_sub_system.sh
+ *
+ * \in *filePath Path and filename specifying the file to read.
+ */
+void SecFileAuthorization::parseSecFile(const SAP_UC* filePath)
+{
+	FILE* secFile = NULL;
+	secFile = fopenU(filePath, cU("rt"));
+
+	if (secFile == NULL)
+		throw RfcExecException(cU("parseSecFile: Could not open sec file"), errno);
+
+	Trace::get().write(cU("Reading command file"), filePath, true);
+
+	unsigned line = 0;
+	SAP_UC buf[1025] = iU("");
+	while (fgetsU(buf, sizeofU(buf), secFile))
+	{
+		line++;
+		Trace::get().write(buf, NULL, false, false);
+		size_t lineLength = strlenU(buf);
+
+		// ignore comments starting with "//" or "#" and empty lines
+		if (lineLength == 0 || strncmpU(buf, cU("\0"), 1) == 0 || strncmpU(buf, cU("\n"), 1) == 0 || strncmpU(buf, cU("//"), 2) == 0 || strncmpU(buf, cU("#"), 1) == 0)
+			continue;
+		else if (lineLength == 1024 && buf[1023] != cU('\n'))
+		{
+			/*CCQ_SECURE_LIB_OK*/
+			sprintfU(buf,  cU("parseSecFile: Line no. %d is too long. Limit: 1024"), line);
+			throw RfcExecException(buf, -1);
+		}
+		else if (lineLength < 30)
+		{
+			/*CCQ_SECURE_LIB_OK*/
+			sprintfU(buf, cU("parseSecFile: Line no. %d is invalid."), line);
+			throw RfcExecException(buf, -2);
+		}
+
+		if (buf[lineLength - 1] == cU('\n'))
+			buf[--lineLength] = cU('\0');
+
+		const SAP_UC* user = NULL;
+		const SAP_UC* sysid = NULL;
+		const SAP_UC* client = NULL;
+		const SAP_UC* path = NULL;
+		SAP_UC* token = strtokU(buf, cU(","));
+		while (token)
+		{
+			SAP_UC* trimmedToken = rtrim(ltrim(token));
+			if (strncmpU(trimmedToken, cU("USER="), 5) == 0)
+				user = trimmedToken + 5;
+			else if (strncmpU(trimmedToken, cU("SYSID="), 6) == 0)
+				sysid = trimmedToken + 6;
+			else if (strncmpU(trimmedToken, cU("CLIENT="), 7) == 0)
+				client = trimmedToken + 7;
+			else if (strncmpU(trimmedToken, cU("PATH="), 5) == 0)
+				path = trimmedToken + 5;
+			else
+			{
+				/*CCQ_SECURE_LIB_OK*/
+				sprintfU(buf, cU("parseSecFile: Line no. %d contains invalid parameter."), line);
+				throw RfcExecException(buf, -3);
+			}
+			token = strtokU(NULL, cU(","));
+		}
+
+		if (user == NULL )
+		{
+			/*CCQ_SECURE_LIB_OK*/
+			sprintfU(buf, cU("parseSecFile: Missing user in line no. %d"), line);
+			throw RfcExecException(buf, -4);
+		}
+		if(sysid == NULL)
+		{
+			/*CCQ_SECURE_LIB_OK*/
+			sprintfU(buf, cU("parseSecFile: Missing sysid in line no. %d"), line);
+			throw RfcExecException(buf, -5);
+		}
+		if(client == NULL)
+		{
+			/*CCQ_SECURE_LIB_OK*/
+			sprintfU(buf, cU("parseSecFile: Missing client in line no. %d"), line);
+			throw RfcExecException(buf, -6);
+		}
+		if(path == NULL)
+		{
+			/*CCQ_SECURE_LIB_OK*/
+			sprintfU(buf, cU("parseSecFile: Missing path in line no. %d"), line);
+			throw RfcExecException(buf, -7);
+		}
+
+		if (strlenU(sysid) > 8)
+		{
+			/*CCQ_SECURE_LIB_OK*/
+			sprintfU(buf, cU("parseSecFile: Invalid SYSID in line no. %d"), line);
+			throw RfcExecException(buf, -8);
+		}
+		if (strlenU(client) != 3)
+		{
+			/*CCQ_SECURE_LIB_OK*/
+			sprintfU(buf, cU("parseSecFile: Invalid CLIENT in line no. %d"), line);
+			throw RfcExecException(buf, -9);
+		}
+
+		allowed.push_back(SecurityEntry(user, sysid, client, path));
+	}
+
+	fclose(secFile);
+	Trace::get().write(cU("End of file"), NULL, true);
+}
+
+
+Authorization* createAuthorization(bool isRegisteredServer, bool needsSecFile, const SAP_UC* secFilePath, const SAP_UC* system)
+{
+	if (accessU(secFilePath, F_OK | R_OK) != 0)
+	{
+		if (errno == ENOENT && !isRegisteredServer)
+		{
+			needsSecFile = false; // No file is ok, we use the default mode (ALE scenario).
+			Trace::get().write(cU("No secFile available. Switching to Default security:"), strerrorU(errno));
+		}
+	}
+
+	Authorization* authorization = NULL;
+	if (needsSecFile)
+	{
+		SecFileAuthorization* secFileAuthorization = new SecFileAuthorization();
+		secFileAuthorization->parseSecFile(secFilePath);
+		authorization = secFileAuthorization;
+	}
+	else
+	{
+		authorization = new DefaultAuthorization(system);
+	}
+	return authorization;
+}
+
+
+
 
 RfcExecServer* theServer = NULL;
 
@@ -94,7 +705,7 @@ private:
  * This is the "bridge" between the C RFC SDK and the C++ rfcexec program. If there will be more
  * than one parallel connection, then at this point instead of "theServer" we'll need either a kind
  * of hashmap mapping the RFC_CONNECTION_HANDLEs to the corresponding RfcExecServer objects, or
- * we'll need to use TLS like JCo 2.1.
+ * we'll need to use Thread Local Storage.
  *
  * Whenever an RFC request for the FM RFC_REMOTE_EXEC arrives from the backend, this function is
  * triggered.
@@ -105,7 +716,8 @@ private:
  * \return RFC_OK, if everything went fine. RFC_EXTERNAL_FAILURE, if the parameters could not be read, access is
  * denied or the creation of the child process failed.
  */
-extern "C" RFC_RC SAP_API RFC_REMOTE_EXEC(RFC_CONNECTION_HANDLE rfcHandle, RFC_FUNCTION_HANDLE funcHandle, RFC_ERROR_INFO *errorInfo){
+extern "C" RFC_RC SAP_API RFC_REMOTE_EXEC(RFC_CONNECTION_HANDLE rfcHandle, RFC_FUNCTION_HANDLE funcHandle, RFC_ERROR_INFO *errorInfo)
+{
 	return theServer->handleRequest(rfcHandle, funcHandle, errorInfo);
 }
 
@@ -125,44 +737,49 @@ extern "C" RFC_RC SAP_API RFC_REMOTE_EXEC(RFC_CONNECTION_HANDLE rfcHandle, RFC_F
  * \return RFC_OK, if everything went fine. RFC_EXTERNAL_FAILURE, if the parameters could not be read, access is
  * denied or the creation of the child process failed.
  */
-RFC_RC RfcExecServer::handleRequest(RFC_CONNECTION_HANDLE rfcHandle, RFC_FUNCTION_HANDLE funcHandle, RFC_ERROR_INFO *errorInfo){
+RFC_RC RfcExecServer::handleRequest(RFC_CONNECTION_HANDLE rfcHandle, RFC_FUNCTION_HANDLE funcHandle, RFC_ERROR_INFO* errorInfo)
+{
 	RFC_RC rc = RFC_OK;
-	RFC_ATTRIBUTES attributes;
+	RFC_ATTRIBUTES attributes = RFC_ATTRIBUTES();
 	SAP_UC command[256] = iU("");
 	SAP_UC readPipe[2] = iU("");
 
 	rc = RfcGetConnectionAttributes(rfcHandle, &attributes, errorInfo);
-	if (rc != RFC_OK){
-		trace(cU("Reading Attributes failed"), errorInfo->message, 1);
+	if (rc != RFC_OK)
+	{
+		Trace::get().write(cU("Reading Attributes failed"), errorInfo->message, true);
 		return RFC_EXTERNAL_FAILURE;
 	}
 
-	if (attributes.trace[0] != cU('0')){
-		if (traceFile == NULL){
-			openTrace();
-			trace(cU("Tracing turned on on backend's request"), NULL);
-			printTraceHeader();
-			backendRequestedTrace = true;
-		}
+	if (attributes.trace[0] != cU('0') && Trace::get().isOpen() == false)
+	{
+		Trace::get().open();
+		Trace::get().write(cU("Tracing turned on on backend's request"), NULL);
+		authorization->traceSecurityInfo();
 	}
-	else if(backendRequestedTrace){
-		backendRequestedTrace = false;
-		trace(cU("Tracing turned off on backend's request"), NULL);
-		closeTrace();
-	}
-	trace(cU("Received call for"), cU("RFC_REMOTE_EXEC"));
+
+	Trace::get().write(cU("Received call for"), cU("RFC_REMOTE_EXEC"));
 
 	rc = RfcGetString(funcHandle, cU("COMMAND"), command, sizeofU(command), NULL, errorInfo);
-	if (rc != RFC_OK){
-		trace(cU("Reading COMMAND value failed"), errorInfo->message, 1);
+	if (rc != RFC_OK)
+	{
+		Trace::get().write(cU("Reading COMMAND value failed"), errorInfo->message, true);
 		return RFC_EXTERNAL_FAILURE;
 	}
-	RfcGetString(funcHandle, cU("READ"), readPipe, sizeofU(readPipe), NULL, NULL);
 
-	if (!checkAuthorization(attributes.user, attributes.sysId, attributes.client, command, attributes.progName)){
+	rc = RfcGetString(funcHandle, cU("READ"), readPipe, sizeofU(readPipe), NULL, errorInfo);
+	if (rc != RFC_OK)
+	{
+		Trace::get().write(cU("Reading READ value failed"), errorInfo->message, true);
+		return RFC_EXTERNAL_FAILURE;
+	}
+
+	if (!authorization->isExecutionAllowed(attributes.user, attributes.sysId, attributes.client, command, attributes.progName))
+	{
 		/*CCQ_SECURE_LIB_OK*/
 		sprintfU(errorInfo->message, cU("Access denied"));
-		trace(cU("Access was denied"), NULL, 1);
+		errorInfo->code = RFC_EXTERNAL_FAILURE;
+		Trace::get().write(cU("Access was denied"), NULL, true);
 		return RFC_EXTERNAL_FAILURE;
 	}
 
@@ -175,110 +792,133 @@ RFC_RC RfcExecServer::handleRequest(RFC_CONNECTION_HANDLE rfcHandle, RFC_FUNCTIO
 	size_t len, i;
 
 	len = strlenU(command);
-	for (i=0; i<len; i++){
-		switch(command[i]){
-			case cU('"'): inArg = !inArg; break;
-			case cU(' '): if (inArg) continue;
-				numArgs++;
-				command[i] = cU('\0');
-				break;
+	for (i = 0; i < len; i++)
+	{
+		switch (command[i])
+		{
+		case cU('"'): inArg = !inArg; break;
+		case cU(' '): if (inArg) continue;
+			numArgs++;
+			command[i] = cU('\0');
+			break;
 		}
 	}
-	args = new SAP_UC*[numArgs+1];
+	args = new SAP_UC * [numArgs + 1];
 	args[0] = command;
 	numArgs = 1;
-	for (i=0; i<len; i++){
-		if (command[i] == cU('\0')){
-			args[numArgs++] = command+(i+1);
-			trace(cU("args parameter"), command+(i+1), 2);
+	for (i = 0; i < len; i++)
+	{
+		if (command[i] == cU('\0'))
+		{
+			args[numArgs++] = command + (i + 1);
+			Trace::get().write(cU("args parameter"), command + (i + 1), true);
 		}
 	}
 	args[numArgs] = NULL;
 
-	if (traceFile){
-		SAP_UC numVal[16];
-		/*CCQ_SECURE_LIB_OK*/
-		sprintfU(numVal, cU("%d"), numArgs-1);
-		trace(cU("Number of arguments"), numVal, 1);
-	}
+	SAP_UC numVal[16];
+	/*CCQ_SECURE_LIB_OK*/
+	sprintfU(numVal, cU("%d"), numArgs - 1);
+	Trace::get().write(cU("Number of arguments"), numVal, true);
 
 	if (getenvU(cU("PATH")) == NULL)
 		putenvU(cU("PATH=%LIBL%:"));
-	trace(cU("Using PATH"), getenvU(cU("PATH")), 1);
+	Trace::get().write(cU("Using PATH"), getenvU(cU("PATH")), true);
 
 	inherit.flags = 0;  /* initialize inheritance structure */
 	inherit.pgroup = SPAWN_NEWPGROUP;
 
 	GETenvironU;
-	if (environU == NULL){
+	if (environU == NULL)
+	{
 		SAP_UC* envvar_array[1] = { NULL };
 		pid = spawnU(command, 0, NULL, &inherit, args, envvar_array);
 	}
-	else{
+	else
+	{
 		pid = spawnU(command, 0, NULL, &inherit, args, environU);
 	}
 
 	delete[] args;
-	if (pid == -1) {
-        /*CCQ_SECURE_LIB_OK*/
+	if (pid == -1)
+	{
+		/*CCQ_SECURE_LIB_OK*/
 		strncpyU(errorInfo->message, strerrorU(errno), ERROR_MESSAGE_SIZE);
 		errorInfo->message[ERROR_MESSAGE_SIZE] = 0;
-		trace(cU("Starting process failed"), errorInfo->message, 1);
+		errorInfo->code = RFC_EXTERNAL_FAILURE;
+		Trace::get().write(cU("Starting process failed"), errorInfo->message, true);
 		return RFC_EXTERNAL_FAILURE;
 	}
-	else trace(cU("Process started successfully"), NULL, 1);
+	else
+		Trace::get().write(cU("Process started successfully"), NULL, true);
 #else
 	FILE* pipe = popenU(command, cU("r"));
 
-	if (pipe == NULL){
-        /*CCQ_SECURE_LIB_OK*/
+	if (pipe == NULL)
+	{
+		/*CCQ_SECURE_LIB_OK*/
 		strncpyU(errorInfo->message, strerrorU(errno), ERROR_MESSAGE_SIZE);
 		errorInfo->message[ERROR_MESSAGE_SIZE] = 0;
-		trace(cU("Starting process failed"), errorInfo->message, 1);
+		errorInfo->code = RFC_EXTERNAL_FAILURE;
+		Trace::get().write(cU("Starting process failed"), errorInfo->message, true);
 		return RFC_EXTERNAL_FAILURE;
 	}
-	else trace(cU("Process started successfully"), NULL, 1);
+	else
+		Trace::get().write(cU("Process started successfully"), NULL, true);
 
-	if (*readPipe == cU('X')){
-		RFC_TABLE_HANDLE pipedata;
+	try
+	{
+		if (*readPipe == cU('X'))
+		{
+			RFC_TABLE_HANDLE pipedata;
 
-		rc = RfcGetTable(funcHandle, cU("PIPEDATA"), &pipedata, errorInfo);
-		if (rc != RFC_OK){
-			trace(cU("Getting PIPEDATA table failed"), errorInfo->message, 1);
-			rc = RFC_EXTERNAL_FAILURE;
-			goto cleanup;
-		}
-
-		while(fgetsU(command, 80, pipe)){
-			RfcAppendNewRow(pipedata, errorInfo);
-			if (errorInfo->code != RFC_OK){
-				rc = RFC_EXTERNAL_FAILURE;
-				goto cleanup;
+			rc = RfcGetTable(funcHandle, cU("PIPEDATA"), &pipedata, errorInfo);
+			if (rc != RFC_OK)
+			{
+				Trace::get().write(cU("Getting PIPEDATA table failed"), errorInfo->message, true);
+				throw RfcExecException(errorInfo->message, errorInfo->code);
 			}
 
-			// remove newline and tabs from the end
-			size_t str_len = strlenU(command);
-			if (command[str_len-2] == cU('\r') && command[str_len-1] == cU('\n'))
-				str_len -= 2;
-			else if (command[str_len-1] == cU('\n') || command[str_len-1] == cU('\t') || command[str_len-1] == cU('\r'))
-				--str_len;
+			while (fgetsU(command, 80, pipe))
+			{
+				RfcAppendNewRow(pipedata, errorInfo);
+				if (errorInfo->code != RFC_OK)
+				{
+					Trace::get().write(cU("Appending row to PIPEDATA table failed"), errorInfo->message, true);
+					throw RfcExecException(errorInfo->message, errorInfo->code);
+				}
 
-			// replace tab by a space (may occur in the middle of the line, e.g. with the command "dir" on UNIX)
-			SAP_UC* current_pos = strchrU(command, cU('\t'));
-			while (current_pos){
-				*current_pos = cU(' ');
-				current_pos = strchrU(current_pos, cU('\t'));
-			}
+				// remove newline and tabs from the end
+				size_t str_len = strlenU(command);
+				if (command[str_len - 2] == cU('\r') && command[str_len - 1] == cU('\n'))
+					str_len -= 2;
+				else if (command[str_len - 1] == cU('\n') || command[str_len - 1] == cU('\t') || command[str_len - 1] == cU('\r'))
+					--str_len;
 
-			RfcSetChars(pipedata, cU("PIPEDATA"), command, str_len, errorInfo);
-			if (errorInfo->code != RFC_OK){
-				rc = RFC_EXTERNAL_FAILURE;
-				goto cleanup;
+				// replace tab by a space (may occur in the middle of the line, e.g. with the command "dir" on UNIX)
+				SAP_UC* current_pos = strchrU(command, cU('\t'));
+				while (current_pos)
+				{
+					*current_pos = cU(' ');
+					current_pos = strchrU(current_pos, cU('\t'));
+				}
+
+				RfcSetChars(pipedata, cU("PIPEDATA"), command, str_len, errorInfo);
+				if (errorInfo->code != RFC_OK)
+				{
+					Trace::get().write(cU("Setting PIPEDATA table failed"), errorInfo->message, true);
+					throw RfcExecException(errorInfo->message, errorInfo->code);
+				}
 			}
 		}
 	}
+	catch (const RfcExecException& ex)
+	{
+		rc = RFC_EXTERNAL_FAILURE;
+		while (fgetsU(command, 80, pipe));
+		pclose(pipe);
+	}
 
-	cleanup:
 	while (fgetsU(command, 80, pipe));
 	pclose(pipe);
 #endif
@@ -303,6 +943,35 @@ extern "C" void shutdownHandler(int sig)
 }
 #endif
 
+
+void enableTraceIfAny(int argc, SAP_UC** argv)
+{
+	for (int i = 1; i < argc; i++)
+	{
+		const SAP_UC* arg = argv[i];
+		if (strncmpU(cU("-t"), arg, 2) == 0)
+		{
+			Trace::get().open();
+		}
+		if (strncmpU(cU("CPIC_TRACE="), arg, 11) == 0 && arg[11] > cU('0'))
+		{
+			const SAP_UC* level = &arg[11];
+			RfcSetCpicTraceLevel(atoiU(level), NULL);
+		}
+		if (strncmpU(cU("RFC_TRACE="), arg, 10) == 0 && arg[10] > cU('0'))
+		{
+			const SAP_UC* level = &arg[10];
+			RfcSetTraceLevel(NULL, NULL, atoiU(level), NULL);
+		}
+	}
+	if (Trace::get().isOpen())
+	{
+		Trace::get().write(cU("Program started with:"), NULL);
+		for (int i = 1; i < argc; ++i)
+			Trace::get().write(argv[i], NULL);
+	}
+}
+
 /**
  * \brief  Starts the program
  * \ingroup rfcexec
@@ -319,9 +988,8 @@ extern "C" void shutdownHandler(int sig)
  * required by the CPIC library.
  * \return 0 on success, 1 if anything goes wrong.
  */
-int mainU (int argc, SAP_UC** argv){
-    RFC_ERROR_INFO errorInfo = RFC_ERROR_INFO();
-
+int mainU(int argc, SAP_UC** argv)
+{
 #ifdef SAPonNT
 	SetConsoleCtrlHandler(shutdownHandler, TRUE);
 #else
@@ -330,42 +998,65 @@ int mainU (int argc, SAP_UC** argv){
 	signal(SIGQUIT, shutdownHandler);
 #endif
 
-	try{
-		RfcExecServer::initMetadata();
+	int rc = 0;
+	try
+	{
+		enableTraceIfAny(argc, argv);
 
-		if (RfcInstallServerFunction(NULL, RfcExecServer::rfc_exec, RFC_REMOTE_EXEC, &errorInfo) != RFC_OK){
-			throw errorInfo;
+		/* no SID, so any ABAP backend can call them */
+		RFC_ERROR_INFO errorInfo = RFC_ERROR_INFO();
+		if (RfcInstallServerFunction(NULL, RFC_REMOTE_EXEC_desc::getRFC_REMOTE_EXEC_desc(), RFC_REMOTE_EXEC, &errorInfo) != RFC_OK)
+		{
+			throw RfcExecException(errorInfo.message, errorInfo.code);
 		}
-		if (RfcInstallServerFunction(NULL, RfcExecServer::rfc_pipe, RFC_REMOTE_EXEC, &errorInfo) != RFC_OK){
-			throw errorInfo;
+		if (RfcInstallServerFunction(NULL, RFC_REMOTE_EXEC_desc::getRFC_REMOTE_PIPE_desc(), RFC_REMOTE_EXEC, &errorInfo) != RFC_OK)
+		{
+			throw RfcExecException(errorInfo.message, errorInfo.code);
 		}
 
 		theServer = new RfcExecServer(argc, argv);
-		theServer->trace(cU("RfcExecServer created successfully"), NULL);
+		Trace::get().write(cU("RfcExecServer created successfully"), NULL);
 		theServer->run();
-		theServer->trace(cU("RfcExecServer is shutting down"), NULL);
-		delete theServer;
+		Trace::get().write(cU("RfcExecServer is shutting down"), NULL);
 	}
-	catch (RFC_ERROR_INFO& err){
-		RfcExecServer::usage(err.message);
-		if (theServer){
-			theServer->trace(cU("RfcExecServer aborted with error"), err.message);
-			delete theServer;
-		}
-		return 1;
-	}
-	catch (SAP_UC* message){
-		RfcExecServer::usage(message);
-		if (theServer){
-			theServer->trace(cU("RfcExecServer aborted with error"), message);
-			delete theServer;
-		}
-		return 1;
+	catch (const RfcExecException& ex)
+	{
+		RfcExecServer::usage(ex.message);
+		Trace::get().write(cU("RfcExecServer aborted with error"), ex.message);
+		rc = ex.rc;
 	}
 
-	return 0;
+	if (theServer)
+	{
+		delete theServer;
+		theServer = NULL;
+	}
+	RFC_REMOTE_EXEC_desc::deleteAll();
+
+	return rc;
 }
 
+
+/* static */ bool RfcExecServer::isStartedServer(int argc, SAP_UC** argv)
+{
+	bool isStartedServer = false;
+	if (argc > 4 &&
+		(!strncmpU(argv[2], cU("sapgw"), 5) || !strncmpU(argv[2], cU("33"), 2) || !strncmpU(argv[2], cU("48"), 2)) &&
+		strlenU(argv[3]) == 8 && //argument 3 is conversation ID
+		isdigitU(argv[3][0]) &&
+		isdigitU(argv[3][1]) &&
+		isdigitU(argv[3][2]) &&
+		isdigitU(argv[3][3]) &&
+		isdigitU(argv[3][4]) &&
+		isdigitU(argv[3][5]) &&
+		isdigitU(argv[3][6]) &&
+		isdigitU(argv[3][7])
+		)
+	{
+		isStartedServer = true;
+	}
+	return isStartedServer;
+}
 /**
  * \brief  Constructor for our RFC Server
  * \ingroup rfcexec
@@ -376,16 +1067,13 @@ int mainU (int argc, SAP_UC** argv){
  * \in argc See mainU
  * \in **argv See mainU
  */
-RfcExecServer::RfcExecServer(int argc, SAP_UC** argv) :
-    running(true),
-    connection(NULL),
-    secureMode(false),
-    traceFile(NULL),
-    backendRequestedTrace(false)
+RfcExecServer::RfcExecServer(int argc, SAP_UC** argv) :	running(true), 	connection(NULL), authorization(NULL)
 {
-    RFC_ERROR_INFO errorInfo = RFC_ERROR_INFO();
-        SAP_UC error[256] = iU("");
+	RFC_ERROR_INFO errorInfo = RFC_ERROR_INFO();
+	SAP_UC error[256] = iU("");
 
+	bool needsSecFile = false;
+	const SAP_UC* secFilePath = NULL;
 	memsetU(system, cU('\0'), sizeofU(system));
 
 	std::vector<const SAP_UC*> additionalParams(5);
@@ -395,181 +1083,169 @@ RfcExecServer::RfcExecServer(int argc, SAP_UC** argv) :
 	additionalParams[3] = cU("-delta");
 	additionalParams[4] = cU("-no_compression");
 
-	for (int i = 1; i < argc; ++i){
-		RFC_CONNECTION_PARAMETER param;
+	for (int i = 1; i < argc; ++i)
+	{
+		std::vector<const SAP_UC*>::const_iterator found_it = std::find_if(additionalParams.begin(), additionalParams.end(), StrCmp(argv[i]));
 
-		std::vector<const SAP_UC*>::const_iterator found_it =
-			std::find_if(additionalParams.begin(), additionalParams.end(), StrCmp(argv[i]));
-
-		if (found_it == additionalParams.end())
-			continue;
-		else
+		if (found_it != additionalParams.end())
+		{
+			RFC_CONNECTION_PARAMETER param = { NULL, NULL };
 			param.name = *found_it + 1; // +1 to get rid of the "-" char
 
-		if (i == argc-1){
-			/*CCQ_SECURE_LIB_OK*/
-			sprintfU(error, cU("Missing value for parameter %s"), argv[i]);
-			goto cleanup;
+			if (i == argc - 1)
+			{
+				/*CCQ_SECURE_LIB_OK*/
+				sprintfU(error, cU("Missing value for parameter %s"), argv[i]);
+				throw RfcExecException(error, -1);
+			}
+
+			param.value = argv[++i];
+			connectionParams.push_back(param);
 		}
+		else
+		{
+			if (!strcmpU(cU("-f"), argv[i]))
+			{
+				if (i == argc - 1)
+				{
+					/*CCQ_SECURE_LIB_OK*/
+					strncpyU(error, cU("Missing file name"), 18);
+					throw RfcExecException(error, -2);
+				}
 
-		param.value = argv[++i];
-		connectionParams.push_back(param);
-	}
-
-	if (	argc > 4 &&
-			(!strncmpU(argv[2],cU("sapgw"),5) || !strncmpU(argv[2],cU("33"),2) || !strncmpU(argv[2],cU("48"),2)) &&
-			strlenU(argv[3]) == 8 && 
-			isdigitU(argv[3][0]) && 
-			isdigitU(argv[3][1]) && 
-			isdigitU(argv[3][2]) && 
-			isdigitU(argv[3][3]) && 
-			isdigitU(argv[3][4]) && 
-			isdigitU(argv[3][5]) && 
-			isdigitU(argv[3][6]) && 
-			isdigitU(argv[3][7])
-		){ //Started Server
-		registered = false;
-
-		for (int i=2; i<argc; i++){
-			if (!strncmpU(argv[i], cU("-t"), 2) ||
-			    (!strncmpU(argv[i], cU("CPIC_TRACE="), 11) && argv[i][11] > cU('0'))){
-				openTrace();
+				needsSecFile = true;
+				secFilePath = argv[++i];
 			}
 		}
-
-		parseCommandFile(cU("rfcexec.sec"));
-		connection = RfcStartServer(argc, argv, &connectionParams[0], connectionParams.size(), &errorInfo);
-		if (connection == NULL) goto cleanup;
 	}
-	else{ //Registered Server
-		unsigned flags = 0;
-                RFC_CONNECTION_PARAMETER param;
 
+	if (RfcExecServer::isStartedServer(argc, argv))
+	{
+		registered = false;
+
+		if (needsSecFile == false)
+		{
+			needsSecFile = true;
+			secFilePath = cU("./rfcexec.sec");
+		}
+
+		connection = RfcStartServer(argc, argv, &connectionParams[0], connectionParams.size(), &errorInfo);
+		if (connection == NULL)
+			throw RfcExecException(errorInfo.message, errorInfo.code);
+	}
+	else
+	{ //Registered Server
 		registered = true;
-
-		for (int i=1; i<argc; i++){
-			if (!strcmpU(cU("-a"), argv[i])){
-				if ((flags & 1) == 1){
+		unsigned flags = 0;
+		
+		for (int i = 1; i < argc; i++)
+		{
+			RFC_CONNECTION_PARAMETER param = { NULL, NULL };
+			if (!strcmpU(cU("-a"), argv[i]))
+			{
+				if ((flags & 1) == 1)
+				{
 					/*CCQ_SECURE_LIB_OK*/
 					strncpyU(error, cU("Duplicate parameter \"-a\""), 25);
-					goto cleanup;
+					throw RfcExecException(error, -3);
 				}
 				flags |= 1;
 				param.name = cU("program_id");
 			}
-			else if (!strcmpU(cU("-g"), argv[i])){
-				if ((flags & 2) == 2){
+			else if (!strcmpU(cU("-g"), argv[i]))
+			{
+				if ((flags & 2) == 2)
+				{
 					/*CCQ_SECURE_LIB_OK*/
 					strncpyU(error, cU("Duplicate parameter \"-g\""), 25);
-					goto cleanup;
+					throw RfcExecException(error, -4);
 				}
 				flags |= 2;
 				param.name = cU("gwhost");
 			}
-			else if (!strcmpU(cU("-x"), argv[i])){
-				if ((flags & 4) == 4){
+			else if (!strcmpU(cU("-x"), argv[i]))
+			{
+				if ((flags & 4) == 4)
+				{
 					/*CCQ_SECURE_LIB_OK*/
 					strncpyU(error, cU("Duplicate parameter \"-x\""), 25);
-					goto cleanup;
+					throw RfcExecException(error, -5);
 				}
 				flags |= 4;
 				param.name = cU("gwserv");
 			}
-			else if (!strcmpU(cU("-t"), argv[i])){
-				openTrace();
-				continue;
-			}
-			else if (!strcmpU(cU("-f"), argv[i])){
-				if ((flags & 8) == 8){
-					/*CCQ_SECURE_LIB_OK*/
-					strncpyU(error, cU("Duplicate parameter \"-f\""), 25);
-					goto cleanup;
-				}
-				flags |= 8;
-				if (i == argc-1){
-					/*CCQ_SECURE_LIB_OK*/
-					strncpyU(error, cU("Missing file name"), 18);
-					goto cleanup;
-				}
-				parseCommandFile(argv[++i]);
-				continue;
-			}
-			else if (!strcmpU(cU("-s"), argv[i])){
-				if ((flags & 16) == 16){
+			else if (!strcmpU(cU("-s"), argv[i]))
+			{
+				if ((flags & 8) == 8)
+				{
 					/*CCQ_SECURE_LIB_OK*/
 					strncpyU(error, cU("Duplicate parameter \"-s\""), 25);
-					goto cleanup;
+					throw RfcExecException(error, -6);
 				}
-				flags |= 16;
-				if (i == argc-1){
+				flags |= 8;
+				if (i == argc - 1)
+				{
 					/*CCQ_SECURE_LIB_OK*/
 					strncpyU(error, cU("Missing system name"), 20);
-					goto cleanup;
+					throw RfcExecException(error, -7);
 				}
 				/*CCQ_SECURE_LIB_OK*/
 				strncpyU(system, argv[++i], 8);
 				continue;
 			}
-			else if (std::find_if(additionalParams.begin(), additionalParams.end(), StrCmp(argv[i])) == additionalParams.end()){
-				/*CCQ_SECURE_LIB_OK*/
-				if (traceFile)
-					fprintfU(traceFile, cU("Unknown parameter: %s\n"), argv[i]); 
-				printfU(cU("Unknown parameter: %s\n"), argv[i]); 
+			else if (std::find_if(additionalParams.begin(), additionalParams.end(), StrCmp(argv[i])) == additionalParams.end())
+			{
+				Trace::get().write(cU("Ignored connection parameter:"), argv[i]);
+				printfU(cU("Ignored connection parameter: %s\n"), argv[i]);
 				continue;
 			}
 
-			if (i == argc-1){
+			if (i == argc - 1)
+			{
 				/*CCQ_SECURE_LIB_OK*/
 				sprintfU(error, cU("Missing value for parameter %s"), argv[i]);
-				goto cleanup;
+				throw RfcExecException(error, -8);
 			}
 
 			param.value = argv[++i];
-                        connectionParams.push_back(param);
+			connectionParams.push_back(param);
 		}
 
-		if ((flags & 7) != 7){
+		if ((flags & 7) != 7)
+		{
 			/*CCQ_SECURE_LIB_OK*/
-			strncpyU(error, cU("Not all mandatory parameters specified"), 39); 
-			goto cleanup;
+			strncpyU(error, cU("Not all mandatory parameters specified"), 39);
+			throw RfcExecException(error, -9);
 		}
 
 		connection = RfcRegisterServer(&connectionParams[0], connectionParams.size(), &errorInfo);
-		if (connection == NULL) goto cleanup;
+		if (connection == NULL)
+			throw RfcExecException(errorInfo.message, errorInfo.code);
 	}
 
-	printTraceHeader();
-
-	return;
-
-	cleanup:
-	if (traceFile){
-		if (*error == cU('\0')) fprintfU(traceFile, cU("Initializing RfcExecServer failed:\t%s\n"), errorInfo.message);
-		else fprintfU(traceFile, cU("Initializing RfcExecServer failed:\t%s\n"), error);
-		closeTrace();
-	}
-
-	if (*error == cU('\0')) throw errorInfo;
-	else throw error;
+	authorization = createAuthorization(registered, needsSecFile, secFilePath, system);
+	authorization->traceSecurityInfo();
 }
 
 /**
  * \brief  Destructor for our RFC Server
  * \ingroup rfcexec
  *
- * Closes the underlying connection and the trace file and cleans up any occupied memory.
+ * Closes the underlying connection and cleans up any occupied memory.
  */
-RfcExecServer::~RfcExecServer(void){
-	if (connection) RfcCloseConnection(connection, NULL);
-	closeTrace();
-
-	vector<SAP_UC*>::iterator it = allowed.begin();
-	vector<SAP_UC*>::iterator end = allowed.end();
-	while (it != end){
-		delete[] *it;
-		it++;
+RfcExecServer::~RfcExecServer(void)
+{
+	if (connection)
+	{
+		RfcCloseConnection(connection, NULL);
+		connection = NULL;
 	}
-	allowed.clear();
+
+	if (authorization)
+	{
+		delete authorization;
+		authorization = NULL;
+	}
 }
 
 /**
@@ -580,18 +1256,20 @@ RfcExecServer::~RfcExecServer(void){
  * 
  * \in *param An optional error message to print before the instructions. Set to NULL, if not needed.
  */
-void RfcExecServer::usage(SAP_UC* param){
-	if (param) printfU(cU("Error: %s\n"), param);
+void RfcExecServer::usage(const SAP_UC* param)
+{
+	if (param)
+		printfU(cU("Error: %s\n"), param);
 	printfU(cU("\tPlease start the program in the following way:\n"));
-	printfU(cU("\trfcexec -t -a <program ID> -g <gateway host> -x <gateway service>\n\t\t-f <file with list of allowed commands> -s <allowed Sys ID>\n"));
+	printfU(cU("\trfcexec -t -a <program ID> -g <gateway host> -x <gateway service>\n\t\t-f <file with list of allowed commands> -s <allowed Sys ID> RFC_TRACE=<level> CPIC_TRACE=<level>\n"));
 	printfU(cU("The options \"-t\" (trace), \"-f\" and \"-s\" are optional.\n\n"));
 	printfU(cU("Below further optional parameters are listed. You can find their\n"));
 	printfU(cU("documentation in sapnwrfc.ini:\n"));
-        printfU(cU("-on_cce <0, 1, 2> (On Character Conversion Error)\n"));
-        printfU(cU("-cfit (Conversion Fault Indicator Token - the substitute symbol used if on_cce=2)\n"));
-        printfU(cU("-keepalive (Sets the keepalive option. Default is 0.)\n"));
-        printfU(cU("-delta <0, 1> (default 1, i.e. use delta-manager)\n"));
-        printfU(cU("-no_compression (table compression, default is 0, i.e. compression is on)\n"));
+	printfU(cU("-on_cce <0, 1, 2> (On Character Conversion Error)\n"));
+	printfU(cU("-cfit (Conversion Fault Indicator Token - the substitute symbol used if on_cce=2)\n"));
+	printfU(cU("-keepalive (Sets the keepalive option. Default is 0.)\n"));
+	printfU(cU("-delta <0, 1> (default 1, i.e. use delta-manager)\n"));
+	printfU(cU("-no_compression (table compression, default is 0, i.e. compression is on)\n"));
 }
 
 /**
@@ -602,24 +1280,27 @@ void RfcExecServer::usage(SAP_UC* param){
  * RFC_REMOTE_EXEC function. When running in registered mode, the program loops as long as it
  * can still connect to the gateway. When running in started mode, it loops just once.
  */
-void RfcExecServer::run(void){
-	RFC_RC rc;
-	RFC_ERROR_INFO errorInfo;
-	bool refresh;
+void RfcExecServer::run(void)
+{
+	RFC_RC rc = RFC_OK;
+	RFC_ERROR_INFO errorInfo = RFC_ERROR_INFO();
+	bool refresh = false;
 
-	while(connection != NULL && running){
+	while(connection != NULL && running)
+	{
 		refresh = false;
 
 		rc = RfcListenAndDispatch(connection, 2, &errorInfo);
-		switch (rc){
+		switch (rc)
+		{
 			case RFC_NOT_FOUND:
 				printfU(cU("Unknown function module: %s\n"), errorInfo.message);
-				trace(cU("Unknown function module"), errorInfo.message);
+				Trace::get().write(cU("Unknown function module"), errorInfo.message);
 				refresh = true;
 				break;
 			case RFC_EXTERNAL_FAILURE:
 				printfU(cU("SYSTEM_FAILURE has been sent to backend: %s\n"), errorInfo.message);
-				trace(cU("SYSTEM_FAILURE has been sent to backend"), errorInfo.message);
+				Trace::get().write(cU("SYSTEM_FAILURE has been sent to backend"), errorInfo.message);
 				refresh = true;
 				break;
 			case RFC_ABAP_MESSAGE:
@@ -634,7 +1315,7 @@ void RfcExecServer::run(void){
 			case RFC_MEMORY_INSUFFICIENT:
 			case RFC_COMMUNICATION_FAILURE:
 				printfU(cU("Communication Failure: %s\n"), errorInfo.message);
-				trace(cU("Communication Failure"), errorInfo.message);
+				Trace::get().write(cU("Communication Failure"), errorInfo.message);
 				refresh = true;
 				connection = NULL;
 				break;
@@ -642,351 +1323,19 @@ void RfcExecServer::run(void){
                 break;
 		}
 
-		if (refresh && registered){
-			trace(cU("Trying to reconnect..."), NULL);
+		if (refresh && registered)
+		{
+			Trace::get().write(cU("Trying to reconnect..."), NULL);
 			connection = RfcRegisterServer(&connectionParams[0], connectionParams.size(), &errorInfo);
-			if (connection == NULL){
-				printfU(cU("Error: unable to reconnect to %s. %s:%s\n"), system,
-						RfcGetRcAsString(errorInfo.code), errorInfo.message);
+			if (connection == NULL)
+			{
+				printfU(cU("Error: unable to reconnect to %s. %s:%s\n"), system, RfcGetRcAsString(errorInfo.code), errorInfo.message);
 				printfU(cU("Stopping to listen at %s\n"), system);
-				trace(cU("Error: unable to reconnect"), errorInfo.message);
-				trace(cU("Stopping to listen at"), system);
+				Trace::get().write(cU("Error: unable to reconnect"), errorInfo.message);
+				Trace::get().write(cU("Stopping to listen at"), system);
 			}
-			else trace(cU("...success"), NULL);
+			else 
+				Trace::get().write(cU("...success"), NULL);
 		}
-	}
-}
-
-/**
- * \brief  Creates a hard-coded metadata description of the FM RFC_REMOTE_EXEC as used by
- * the ALE interface.
- * \ingroup rfcexec
- * 
- * Note that the table PIPEDATA has been implemented by the original rfcexec program, but is
- * not used in the ALE standard functionality. Other EDI subsystems may use it though, therefore
- * it remains part of the interface.
- */
-void RfcExecServer::initMetadata(void){
-	RFC_ERROR_INFO errorInfo;
-	RFC_RC rc = RFC_OK;
-	RFC_PARAMETER_DESC paramDescr;
-	RFC_TYPE_DESC_HANDLE tableStruct;
-	RFC_FIELD_DESC fieldDescr;
-
-	memsetU(paramDescr.defaultValue, cU('\0'), sizeofU(RFC_PARAMETER_DEFVALUE));
-	paramDescr.extendedDescription = 0;
-	paramDescr.optional = 0;
-	memsetU(paramDescr.parameterText, cU('\0'), sizeofU(RFC_PARAMETER_TEXT));
-
-	rfc_exec = RfcCreateFunctionDesc(cU("RFC_REMOTE_EXEC"), &errorInfo);
-	if (rfc_exec == NULL) throw errorInfo;
-	rfc_pipe = RfcCreateFunctionDesc(cU("RFC_REMOTE_PIPE"), &errorInfo);
-	if (rfc_pipe == NULL) throw errorInfo;
-
-	/*CCQ_SECURE_LIB_OK*/
-	strncpyU(paramDescr.name, cU("COMMAND"), 8);
-	paramDescr.type = RFCTYPE_CHAR;
-	paramDescr.direction = RFC_IMPORT;
-	paramDescr.nucLength = 256;
-	paramDescr.ucLength = 512;
-	paramDescr.decimals = 0;
-	paramDescr.typeDescHandle = NULL;
-	rc = RfcAddParameter(rfc_exec, &paramDescr, &errorInfo);
-	if (rc != RFC_OK) throw errorInfo;
-	rc = RfcAddParameter(rfc_pipe, &paramDescr, &errorInfo);
-	if (rc != RFC_OK) throw errorInfo;
-
-	/*CCQ_SECURE_LIB_OK*/
-	strncpyU(paramDescr.name, cU("READ"), 5);
-	paramDescr.type = RFCTYPE_CHAR;
-	paramDescr.direction = RFC_IMPORT;
-	paramDescr.nucLength = 1;
-	paramDescr.ucLength = 2;
-	paramDescr.decimals = 0;
-	paramDescr.typeDescHandle = NULL;
-	rc = RfcAddParameter(rfc_pipe, &paramDescr, &errorInfo);
-	if (rc != RFC_OK) throw errorInfo;
-
-	tableStruct = RfcCreateTypeDesc(cU("PIPEDATA"), &errorInfo);
-	if (tableStruct == NULL) throw errorInfo;
-
-	/*CCQ_SECURE_LIB_OK*/
-	strncpyU(fieldDescr.name, cU("PIPEDATA"), 9);
-	fieldDescr.type = RFCTYPE_CHAR;
-	fieldDescr.nucLength = 80;
-	fieldDescr.nucOffset = 0;
-	fieldDescr.ucLength = 160;
-	fieldDescr.ucOffset = 0;
-	fieldDescr.decimals = 0;
-	fieldDescr.typeDescHandle = NULL;
-	fieldDescr.extendedDescription = NULL;
-	rc = RfcAddTypeField(tableStruct, &fieldDescr, &errorInfo);
-	if (rc != RFC_OK) throw errorInfo;
-
-	rc = RfcSetTypeLength(tableStruct,80, 160, &errorInfo);
-	if (rc != RFC_OK) throw errorInfo;
-
-	/*CCQ_SECURE_LIB_OK*/
-	strncpyU(paramDescr.name, cU("PIPEDATA"), 9);
-	paramDescr.type = RFCTYPE_TABLE;
-	paramDescr.direction = RFC_TABLES;
-	paramDescr.nucLength = 8;
-	paramDescr.ucLength = 8;
-	paramDescr.decimals = 0;
-	paramDescr.typeDescHandle = tableStruct;
-	rc = RfcAddParameter(rfc_exec, &paramDescr, &errorInfo);
-	if (rc != RFC_OK) throw errorInfo;
-	rc = RfcAddParameter(rfc_pipe, &paramDescr, &errorInfo);
-	if (rc != RFC_OK) throw errorInfo;
-}
-
-/**
- * \brief  Opens the trace file.
- * \ingroup rfcexec
- *
- * We don't throw an error, if opening the trace file fails, because tracing should
- * not disrupt the productive functionality of the program.
- */
-void RfcExecServer::openTrace(void){
-    time_t     currTime = time( NULL );
-    if (traceFile == NULL)
-    {
-	    SAP_UC tracefile_name[128] = iU("");
-	    sprintfU (tracefile_name, /*CCQ_FORMAT_STRING_OK*/cU("rfcexec%.5d_%05llu.trc"), getpid(), (long long)currTime); 
-        traceFile = fopenU(tracefile_name, cU("wt"));
-    }
-	if (traceFile){
-		SAP_UC cwd[512];
-		/*CCQ_CLIB_LOCTIME_OK*/ 
-		fprintfU(traceFile, cU("***** Rfcexec trace file opened at %s\n"), ctimeU(&currTime));
-		trace(cU("NW RFC SDK Version"), RfcGetVersion(NULL, NULL, NULL));
-		getcwdU(cwd,sizeofU(cwd));
-		fprintfU(traceFile, cU("***** Current working directory: %s\n"), cwd);
-	}
-}
-
-/**
- * \brief  Closes the trace file.
- * \ingroup rfcexec
- */
-void RfcExecServer::closeTrace(void){
-	if (traceFile){
-        time_t     currTime = time( NULL );
-		/*CCQ_CLIB_LOCTIME_OK*/ 
-		fprintfU(traceFile, cU("***** Rfcexec trace file closed at %s\n"), ctimeU(&currTime));
-		fclose(traceFile);
-		traceFile = NULL;
-	}
-}
-
-/**
- * \brief  Prints the used security settings to the trace file.
- * \ingroup rfcexec
- */
-void RfcExecServer::printTraceHeader(void){
-	if (secureMode){
-		if(traceFile){
-			trace(cU("Using secure mode. Allowing connections only for the following USER:SYSID:CLIENT:PROGRAM combinations"), NULL);
-			vector<SAP_UC*>::iterator it = allowed.begin();
-			vector<SAP_UC*>::iterator end = allowed.end();
-			while (it != end){
-				trace(*it, NULL, 1);
-				it++;
-			}
-		}
-	}
-	else{
-		trace(cU("Using default mode. Allowing connections only from Report SAPLEDI7 and System"), system);
-	}
-	trace(cU("\t----------\n"), NULL);
-}
-
-/**
- * \brief  Writes an entry to the trace file.
- * \ingroup rfcexec
- *
- * We don't throw an error, if writing the trace entry fails, because tracing should
- * not disrupt the productive functionality of the program.
- *
- * \in key The "variable name" of the variable to trace, or a "heading".
- * \in value The value of the variable to trace, or a "message".
- * \in indent Start the line with n tabs. Optional. Default is 0.
- */
-void RfcExecServer::trace(const SAP_UC* key, const SAP_UC* value, int indent){
-	if (traceFile){
-		while (indent--) fprintfU(traceFile, cU("\t"));
-		if (value) fprintfU(traceFile, cU("%s:\t%s\n"), key, value);
-		else fprintfU(traceFile, cU("%s\n"), key);
-		fflush(traceFile);
-	}
-}
-
-/**
- * \brief  Parses the file containing detailed access restrictions for this program.
- * \ingroup rfcexec
- * 
- * This program can be started with an additional file containing detailed information about
- * which SAP user from which R/3 system and which client may execute which OS command.
- * Each line of the file must be in the following format:
- *
- * USER=EDIUSER,SYSID=XYZ,CLIENT=000,PATH=/usr/bin/edi_sub_system.sh
- *
- * \in *filePath Path and filename specifying the file to read.
- */
-void RfcExecServer::parseCommandFile(const SAP_UC* filePath)
-{
-	FILE* commandFile = NULL;
-	SAP_UC buf[1025] = iU(""), *temp = NULL, *user = NULL, *sysid = NULL, *client = NULL, *path = NULL;
-	size_t lineLength = 0;
-	unsigned line = 0;
-	
-	commandFile = fopenU(filePath, cU("rt"));
-
-	if (commandFile == NULL){
-		if (errno == ENOENT && !registered) return; // No file is ok, we use the default mode (ALE scenario).
-
-		trace(cU("Error in parseCommandFile"), strerrorU(errno));
-		closeTrace();
-		throw strerrorU(errno);
-	}
-
-	trace(cU("Reading command file"), filePath, 1);
-
-	while(fgetsU(buf, sizeofU(buf), commandFile)){
-		line++;
-		trace(buf, NULL, 1);
-		/*CCQ_SECURE_LIB_OK*/
-		lineLength = strlenU(buf);
-		if (lineLength == 1024 && buf[1023] != cU('\n')){
-			/*CCQ_SECURE_LIB_OK*/
-			sprintfU(buf, cU("Line no. %d is too long. Limit: 1024"), line);
-			goto error;
-		}
-		else if (lineLength < 30){
-			/*CCQ_SECURE_LIB_OK*/
-			sprintfU(buf,  cU("Line no. %d is invalid."), line);
-			goto error;
-		}
-
-		if (buf[lineLength-1] == cU('\n')) buf[--lineLength] = cU('\0');
-
-		user = sysid = client = path = NULL;
-		temp = strtokU(buf, cU(","));
-		while (temp){
-			if (strncmpU(temp, cU("USER="), 5) == 0) user = temp+5;
-			else if (strncmpU(temp, cU("SYSID="), 6) == 0) sysid = temp+6;
-			else if (strncmpU(temp, cU("CLIENT="), 7) == 0) client = temp+7;
-			else if (strncmpU(temp, cU("PATH="), 5) == 0) path = temp+5;
-			else{
-				/*CCQ_SECURE_LIB_OK*/
-				sprintfU(buf,  cU("Line no. %d contains invalid parameter."), line);
-				goto error;
-			}
-			temp = strtokU(NULL, cU(","));
-		}
-
-		if (user == NULL || sysid == NULL || client == NULL || path == NULL){
-			/*CCQ_SECURE_LIB_OK*/
-			sprintfU(buf,  cU("Missing parameter in line no. %d"), line);
-			goto error;
-		}
-		if (strlenU(sysid) > 8){
-			/*CCQ_SECURE_LIB_OK*/
-			sprintfU(buf,  cU("Invalid SYSID in line no. %d"), line);
-			goto error;
-		}
-		if (strlenU(client) != 3){
-			/*CCQ_SECURE_LIB_OK*/
-			sprintfU(buf,  cU("Invalid CLIENT in line no. %d"), line);
-			goto error;
-		}
-
-		lineLength = 12 + strlenU(user) + strlenU(sysid) + strlenU(path);
-		temp = new SAP_UC[lineLength];
-		/*CCQ_SECURE_LIB_OK*/
-		sprintfU(temp, cU("U:%sS:%sC:%sP:%s"), user, sysid, client, path);
-
-		allowed.push_back(temp);
-	}
-
-	secureMode = true;
-	fclose(commandFile);
-	trace(cU("End of file"), NULL, 1);
-	return;
-
-	error: fclose(commandFile);
-	trace(cU("Error"), buf);
-	throw buf;
-}
-
-/**
- * \brief  Checks whether the current SAP user is allowed to execute the given OS command.
- * \ingroup rfcexec
- * 
- * If the program has been started with the extra parameter -f \<filename>, the given user,
- * SAP system ID, client and OS command and matched against the cached entries of the file.
- * Access is allowed, only if an exact match can be found.
- *
- * Otherwise the program verifies only, that the call came from the correct SAP system and
- * that the calling program is the ALE layer (SAPLEDI7).
- * 
- * \in user The current backend user calling the server program
- * \in sysid System ID of the calling backend
- * \in client The Client ("Mandant", not the opposite of "Server"...!) from which the call came
- * \in path The program to be started, given by relative or absolute path. Came from the 
- * function module import parameter COMMAND
- * \in caller Name of the ABAP Report/Function Group, which issued the CALL FUNCTION statement.
- * Used only in "default mode".
- * \return true means: this call is allowed, false means: it's denied.
- */
-bool RfcExecServer::checkAuthorization(SAP_UC* user, SAP_UC* sysid, SAP_UC* client, SAP_UC* path, SAP_UC* caller){
-	if (traceFile){
-		trace(cU("User"), user, 1);
-		trace(cU("SysID"), sysid, 1);
-		trace(cU("Client"), client, 1);
-		trace(cU("Program"), path, 1);
-		trace(cU("Calling Report"), caller, 1);
-	}
-	if (secureMode){
-		size_t len = 9 + strlenU(user) + strlenU(sysid) + strlenU(client) + strlenU(path);
-		// I'll leave strlenU(client) in here, because this function may be called with an
-		// invalid (longer) client input...
-
-		SAP_UC* temp = new SAP_UC[len];
-		/*CCQ_SECURE_LIB_OK*/
-		sprintfU(temp, cU("U:%sS:%sC:%sP:%s"), user, sysid, client, path);
-		vector<SAP_UC*>::iterator it = allowed.begin();
-		vector<SAP_UC*>::iterator end = allowed.end();
-		while (it != end && strncmpU(temp, *it, len) != 0) it++;
-
-		if (it == end){
-			SAP_UC* allowedPath;
-			size_t allowedPathLen;
-			it = allowed.begin();
-			/*CCQ_SECURE_LIB_OK*/
-			sprintfU(temp, cU("U:%sS:%sC:%sP:"), user, sysid, client);
-			len -= (strlenU(path)+1);
-			while (it != end){
-				if (strncmpU(temp, *it, len) == 0){
-					allowedPath = (*it) + len;
-					allowedPathLen = strlenU(allowedPath);
-					if (allowedPath[allowedPathLen-1] == cU('*') && strncmpU(allowedPath, path, allowedPathLen-1) == 0){
-						delete[] temp;
-						return true;
-					}
-				}
-				it++;
-			}
-			delete[] temp;
-			return false;
-		}
-		else{
-			delete[] temp;
-			return true;
-		}
-	}
-	else{
-		if (strcmpU(caller, cU("SAPLEDI7")) == 0 && (*system == cU('\0') || strcmpU(sysid, system) == 0)) return true;
-		else return false;
 	}
 }

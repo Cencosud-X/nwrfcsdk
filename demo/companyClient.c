@@ -25,6 +25,7 @@ int mainU(int argc, SAP_UC** argv){
 	RFC_BYTE buffer[1105];
 	unsigned utf8Len = 1105, resultLen;
 	FILE* outFile;
+    size_t position;
 
 	loginParams[0].name = cU("ashost");	loginParams[0].value = argc > 1 ? argv[1] : cU("hostname");
 	loginParams[1].name = cU("sysnr");	loginParams[1].value = argc > 2 ? argv[2] : cU("05");
@@ -71,8 +72,9 @@ int mainU(int argc, SAP_UC** argv){
 	/*SAPUNICODEOK_STRINGCONST*/ /*SAPUNICODEOK_LIBFCT*/
 	fputs("<?xml version=\"1.0\"?>\n<message>", outFile);
 	/*SAPUNICODEOK_LIBFCT*/
-	fwrite(buffer, 1, utf8Len, outFile); // See comment above for system i
+	position = fwrite(buffer, 1, utf8Len, outFile); // See comment above for system i
 	/*SAPUNICODEOK_STRINGCONST*/ /*SAPUNICODEOK_LIBFCT*/
+    if (position != utf8Len) return 2;
 	fputs("</message>", outFile);
 	fclose(outFile);
 
