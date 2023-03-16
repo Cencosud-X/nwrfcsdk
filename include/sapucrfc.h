@@ -1,7 +1,7 @@
-/* @(#) $Id: //bas/753_COR/src/include/sapucrfc.h#5 $ SAP*/
+/* @(#) $Id: //bas/753_REL/src/include/sapucrfc.h#4 $ SAP*/
 /* CCQ_CCU_FILE_OFF */ /* CCQ_COV_FILE_OFF */ /* CCQ_IPV6_SUPPORT_FILE_OK */ /* CCQ_USE_TIME_T_FILE_OK */
 #ifndef SAPUCRFC_H
-#define SAPUCRFC_H "$Id: //bas/753_COR/src/include/sapucrfc.h#5 $"
+#define SAPUCRFC_H "$Id: //bas/753_REL/src/include/sapucrfc.h#4 $"
 
 /*****************************************************************************/
 /*                                                                           */
@@ -1375,12 +1375,12 @@ typedef unsigned long SAP_UINT_PTR;
  *----------------------------------------------------------------------------*/
 /* There are two possibilites:
  * (1) In a source file, define 
- *     #define SAP_IDENT "@(#) $Id: //bas/753_COR/src/include/sapucrfc.h#5 $"
+ *     #define SAP_IDENT "@(#) $Id: //bas/753_REL/src/include/sapucrfc.h#4 $"
  *     at top of the file (before(!) including saptype.h or sapuc.h).
  *     This identicfication is processed later in sapuc.h, so that
  *     sccsid (non-Unicode) and sccsidU (common UC/NUC semantics) are defined.
  * (2) In a source file, use the macro
- *     SAP_IDENTN(name,"@(#) $Id: //bas/753_COR/src/include/sapucrfc.h#5 $")
+ *     SAP_IDENTN(name,"@(#) $Id: //bas/753_REL/src/include/sapucrfc.h#4 $")
  *     after(!) including saptype.h to define a identification string.
  *     Please note: A semicolon must not be placed behind
  *     this macro call, because this would cause errors on pedantic ISO-C

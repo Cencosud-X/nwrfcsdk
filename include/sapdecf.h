@@ -1,4 +1,4 @@
-/* @(#) $Id: //bas/753_COR/src/base/api/sapdecf.h#3 $ SAP*/
+/* @(#) $Id: //bas/753_REL/src/base/api/sapdecf.h#3 $ SAP*/
 /*-----------------------------------------------------------------------------
  *
  * (c) Copyright SAP AG, Walldorf
